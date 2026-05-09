@@ -1,0 +1,8 @@
+# 运行依赖
+PyGithub>=1.58.0
+certifi>=2023.0.0
+python-dotenv>=1.0.0
+
+# 开发依赖
+pytest>=7.0.0
+pyinstaller>=5.0.0

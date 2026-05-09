@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+*.spec
+!build.spec
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 环境变量
+.env
+
+# 运行时数据
+.file_manager/
+*.log
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 打包产物（根目录的 exe 忽略，dist 目录允许）
+*.exe
+*.msi
+*.dmg
+*.AppImage
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
