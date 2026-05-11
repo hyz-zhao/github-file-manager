@@ -1468,65 +1468,81 @@ class UIManager:
     
     def _setup_drag_drop(self):
         """设置拖拽功能"""
-        self._setup_native_drag_drop()
-    
-    def _setup_native_drag_drop(self):
-        """使用原生方式实现拖拽"""
-        self.file_tree.drop_target_register = lambda *args: None
-        self.file_tree.dnd_bind = lambda *args: None
-        
-        self._drag_files = []
-        
-        drop_frame = tk.Frame(self.file_tree, bg='#3498db', relief=tk.SOLID, bd=2)
-        
-        def on_drag_enter(event):
-            if event.data:
-                self._drag_files = self.root.tk.splitlist(event.data)
-                drop_frame.place(x=0, y=0, relwidth=1, relheight=1)
-                self.show_status("📥 释放鼠标以拖放文件")
-        
-        def on_drag_leave(event):
-            drop_frame.place_forget()
-            self.show_status("✓ 就绪")
-        
-        def on_drop(event):
-            drop_frame.place_forget()
-            if hasattr(self, '_drag_files') and self._drag_files:
-                self._handle_dropped_files(self._drag_files)
-                self._drag_files = []
-        
+        self._drag_data = []
+        self._setup_drop_in()
+        self._setup_drag_out()
+
+    def _setup_drop_in(self):
+        """设置拖入功能（从外部拖文件到窗口）"""
         try:
-            import tkinterdnd2
-            self.root.tk.call('package', 'require', 'tkdnd')
-            self.file_tree.tk.call('tkdnd::drop_target', 'register', self.file_tree, '*')
-            self.file_tree.bind('<<Drop:DND_Files>>', on_drop)
-            self.file_tree.bind('<<DropEnter>>', on_drag_enter)
-            self.file_tree.bind('<<DropLeave>>', on_drag_leave)
-        except:
-            self._setup_simple_drag_drop()
-    
-    def _setup_simple_drag_drop(self):
-        """简单的拖拽实现（粘贴文件）"""
-        def on_paste(event):
+            from tkinterdnd2 import DND_FILES, TkinterDnD
+            if isinstance(self.root, TkinterDnD.Tk):
+                self.file_tree.drop_target_register(DND_FILES)
+                self.file_tree.dnd_bind('<<Drop>>', self._on_drop_in)
+        except ImportError:
+            logger.warning("tkinterdnd2 未安装，拖入功能不可用")
             try:
-                from tkinter import clipboard
-                clipboard_content = self.root.clipboard_get()
-                if os.path.exists(clipboard_content):
-                    if os.path.isfile(clipboard_content):
-                        self._handle_dropped_files([clipboard_content])
-                    elif os.path.isdir(clipboard_content):
-                        self._handle_dropped_files([clipboard_content])
-            except:
-                pass
-        
-        self.root.bind('<Control-v>', on_paste)
-        self.show_status("提示：Ctrl+V 可粘贴文件")
-    
+                import windnd
+                windnd.hook_dropfiles(self.file_tree, func=self._on_drop_in)
+            except ImportError:
+                logger.warning("windnd 也未安装，拖入功能不可用")
+                self.show_status("提示：可使用 Ctrl+V 粘贴文件到窗口")
+
+    def _on_drop_in(self, event):
+        """处理拖入的文件"""
+        if event.data:
+            files = self.root.tk.splitlist(event.data)
+            if files:
+                file_paths = []
+                for f in files:
+                    if isinstance(f, bytes):
+                        try:
+                            file_paths.append(f.decode('gbk'))
+                        except:
+                            try:
+                                file_paths.append(f.decode('utf-8'))
+                            except:
+                                file_paths.append(f.decode('latin-1', errors='replace'))
+                    else:
+                        file_paths.append(f)
+                self._handle_dropped_files(file_paths)
+
+    def _setup_drag_out(self):
+        """设置拖出功能（从窗口拖文件到外部）"""
+        try:
+            from tkinterdnd2 import DND_FILES, TkinterDnD
+            if isinstance(self.root, TkinterDnD.Tk):
+                self.file_tree.drag_source_register(1, DND_FILES)
+
+                def on_drag_start(event):
+                    selection = self.file_tree.selection()
+                    if not selection:
+                        return
+                    self._drag_data = []
+                    for item_id in selection:
+                        file_item = self.file_store.get_file_by_id(item_id)
+                        if file_item and os.path.exists(file_item.local_path):
+                            self._drag_data.append(file_item.local_path)
+
+                    if self._drag_data:
+                        file_list = '\n'.join(self._drag_data)
+                        event.data = file_list
+
+                def on_drag_end(event):
+                    if self._drag_data:
+                        self.show_status(f"已拖出 {len(self._drag_data)} 个文件")
+                    self._drag_data = []
+
+                self.file_tree.bind('<B1-Motion>', on_drag_start)
+                self.file_tree.bind('<<DragEnd>>', on_drag_end)
+        except ImportError:
+            logger.warning("tkinterdnd2 未安装，拖出功能不可用")
+
     def _handle_dropped_files(self, file_paths):
         """处理拖放的文件"""
         success_count = 0
         fail_count = 0
-        
+
         for path in file_paths:
             if os.path.isfile(path):
                 success, msg, _ = self.file_store.add_file(path, self.current_folder)
@@ -1542,7 +1558,7 @@ class UIManager:
                 else:
                     fail_count += 1
                     logger.warning(f"添加文件夹失败：{msg}")
-        
+
         self.refresh_list()
         if success_count > 0:
             self.show_success(f"成功添加 {success_count} 个项目")
@@ -2160,13 +2176,18 @@ class FileManagerApp:
     文件管理器主应用类
     负责初始化和启动整个应用
     """
-    
+
     def __init__(self):
-        self.root = tk.Tk()
+        try:
+            from tkinterdnd2 import TkinterDnD
+            self.root = TkinterDnD.Tk()
+        except ImportError:
+            logger.warning("tkinterdnd2 未安装，拖放功能将不可用")
+            self.root = tk.Tk()
         self.file_store = FileStore()
         self.github_sync = GitHubSync()
         self.ui_manager = None
-        
+
         self._init_app()
     
     def _init_app(self):

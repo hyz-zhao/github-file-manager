@@ -2,6 +2,8 @@
 PyGithub>=1.58.0
 certifi>=2023.0.0
 python-dotenv>=1.0.0
+windnd>=1.0.0
+tkinterdnd2>=0.3.0
 
 # 开发依赖
 pytest>=7.0.0
