@@ -1044,79 +1044,125 @@ class UIManager:
     
     def _create_toolbar(self):
         """创建顶部工具栏"""
-        toolbar_frame = tk.Frame(self.root, bg='#ffffff', height=60)
+        # 第一行：标题 + 路径导航栏（可滚动） + 搜索框
+        toolbar_frame = tk.Frame(self.root, bg='#ffffff')
         toolbar_frame.pack(fill=tk.X)
-        toolbar_frame.pack_propagate(False)
-        
+
+        # 左侧：标题
         left_frame = tk.Frame(toolbar_frame, bg='#ffffff')
-        left_frame.pack(side=tk.LEFT, padx=15, pady=10)
-        
-        title_label = tk.Label(left_frame, text="📁 文件管理器", 
-                              font=('微软雅黑', 18, 'bold'), 
+        left_frame.pack(side=tk.LEFT, padx=15, pady=8)
+
+        title_label = tk.Label(left_frame, text="📁 文件管理器",
+                              font=('微软雅黑', 18, 'bold'),
                               fg='#2c3e50', bg='#ffffff')
         title_label.pack(side=tk.LEFT)
-        
-        version_label = tk.Label(left_frame, text="v3.0", 
-                                font=('微软雅黑', 9), 
+
+        version_label = tk.Label(left_frame, text="v3.0",
+                                font=('微软雅黑', 9),
                                 fg='#95a5a6', bg='#ffffff')
         version_label.pack(side=tk.LEFT, padx=5, pady=8)
-        
-        nav_frame = tk.Frame(toolbar_frame, bg='#ffffff')
-        nav_frame.pack(side=tk.LEFT, padx=20, pady=10)
-        
-        self.back_btn = tk.Button(nav_frame, text="⬆️ 返回上级", font=('微软雅黑', 10),
-                                  command=self._go_back, bg='#95a5a6', fg='white',
-                                  relief=tk.FLAT, padx=10, pady=5, cursor='hand2',
-                                  state=tk.DISABLED)
-        self.back_btn.pack(side=tk.LEFT, padx=3)
-        
-        self.path_label = tk.Label(nav_frame, text="📍 当前位置：根目录",
-                                   font=('微软雅黑', 10), fg='#2c3e50', bg='#ffffff')
-        self.path_label.pack(side=tk.LEFT, padx=10)
-        
-        btn_frame = tk.Frame(toolbar_frame, bg='#ffffff')
-        btn_frame.pack(side=tk.LEFT, padx=10, pady=10)
-        
-        buttons = [
-            ("📤 上传文件", self._on_upload_file, "#3498db"),
-            ("📁 上传文件夹", self._on_upload_folder, "#9b59b6"),
-            ("➕ 新建文件夹", self._on_new_folder, "#1abc9c"),
-            ("⬇️ 下载", self._on_download, "#27ae60"),
-            ("✏️ 重命名", self._on_rename, "#f39c12"),
-            ("🗑️ 删除", self._on_delete, "#e74c3c"),
-            ("🔄 刷新", self.refresh_list, "#34495e"),
-        ]
-        
-        for text, command, color in buttons:
-            btn = tk.Button(btn_frame, text=text, font=('微软雅黑', 9),
-                          command=command, bg=color, fg='white',
-                          relief=tk.FLAT, padx=8, pady=4,
-                          cursor='hand2')
-            btn.pack(side=tk.LEFT, padx=2)
-        
+
+        # 右侧：搜索框
         search_frame = tk.Frame(toolbar_frame, bg='#ffffff')
-        search_frame.pack(side=tk.RIGHT, padx=15, pady=10)
-        
+        search_frame.pack(side=tk.RIGHT, padx=(5, 15), pady=8)
+
         search_inner = tk.Frame(search_frame, bg='#ecf0f1', padx=5, pady=3)
         search_inner.pack()
-        
-        tk.Label(search_inner, text="🔍", font=('微软雅黑', 12), 
+
+        tk.Label(search_inner, text="🔍", font=('微软雅黑', 12),
                 bg='#ecf0f1', fg='#7f8c8d').pack(side=tk.LEFT)
-        
-        search_entry = tk.Entry(search_inner, textvariable=self.search_var, 
+
+        search_entry = tk.Entry(search_inner, textvariable=self.search_var,
                                width=20, font=('微软雅黑', 10),
                                relief=tk.FLAT, bg='#ecf0f1',
                                highlightthickness=0)
         search_entry.pack(side=tk.LEFT, padx=5)
         search_entry.bind('<KeyRelease>', self._on_search)
+
+        # 中间：路径导航栏（可水平滚动）
+        nav_outer = tk.Frame(toolbar_frame, bg='#ffffff')
+        nav_outer.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=8)
+
+        nav_top = tk.Frame(nav_outer, bg='#ffffff')
+        nav_top.pack(fill=tk.X)
+
+        # 返回按钮固定宽度，不被挤压
+        self.back_btn = tk.Button(nav_top, text="⬆️ 返回", font=('微软雅黑', 9),
+                                  command=self._go_back, bg='#95a5a6', fg='white',
+                                  relief=tk.FLAT, padx=8, pady=2, cursor='hand2',
+                                  state=tk.DISABLED, width=6)
+        self.back_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+        # 路径文字放在 Canvas 中，支持水平滚动
+        path_container = tk.Frame(nav_top, bg='#ffffff')
+        path_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.path_canvas = tk.Canvas(path_container, bg='#ffffff', highlightthickness=0, height=22)
+        self.path_canvas.pack(side=tk.TOP, fill=tk.X, expand=True)
+
+        self.path_label = tk.Label(self.path_canvas, text="📍 当前位置：根目录",
+                                   font=('微软雅黑', 10), fg='#2c3e50', bg='#ffffff',
+                                   anchor='w')
+        self.path_label_id = self.path_canvas.create_window(0, 0, window=self.path_label, anchor='nw')
+
+        # 水平滚动条
+        path_hscroll = tk.Scrollbar(path_container, orient=tk.HORIZONTAL,
+                                     command=self.path_canvas.xview)
+        path_hscroll.pack(side=tk.BOTTOM, fill=tk.X)
+        self.path_canvas.configure(xscrollcommand=path_hscroll.set)
+
+        # 鼠标滚轮水平滚动路径
+        def _on_path_mousewheel(event):
+            self.path_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+        self.path_canvas.bind_all('<Shift-MouseWheel>', _on_path_mousewheel)
+
+        # 路径文字变化时更新滚动区域
+        def _update_scroll_region(event=None):
+            self.path_canvas.configure(scrollregion=self.path_canvas.bbox("all"))
+            canvas_w = self.path_canvas.winfo_width()
+            label_w = self.path_label.winfo_reqwidth()
+            self.path_canvas.itemconfig(self.path_label_id, width=max(canvas_w, label_w))
+        self.path_label.bind('<Configure>', _update_scroll_region)
+        self.path_canvas.bind('<Configure>', _update_scroll_region)
     
     def _create_main_area(self):
         """创建主区域（三栏布局）"""
         main_frame = tk.Frame(self.root, bg='#f5f6fa')
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
+
         self._create_sidebar(main_frame)
-        self._create_file_list(main_frame)
+
+        center_frame = tk.Frame(main_frame, bg='#ffffff')
+        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        list_header = tk.Frame(center_frame, bg='#2c3e50', height=35)
+        list_header.pack(fill=tk.X)
+        list_header.pack_propagate(False)
+        tk.Label(list_header, text="📋 文件列表", font=('微软雅黑', 11, 'bold'),
+                bg='#2c3e50', fg='white').pack(pady=6)
+
+        action_bar = tk.Frame(center_frame, bg='#f8f9fa', height=38)
+        action_bar.pack(fill=tk.X, padx=5, pady=(3, 0))
+        action_bar.pack_propagate(False)
+
+        buttons = [
+            ("📤 上传", self._on_upload_file, "#3498db"),
+            ("📁 文件夹", self._on_upload_folder, "#9b59b6"),
+            ("➕ 新建", self._on_new_folder, "#1abc9c"),
+            ("⬇️ 下载", self._on_download, "#27ae60"),
+            ("✏️ 重命名", self._on_rename, "#f39c12"),
+            ("🗑️ 删除", self._on_delete, "#e74c3c"),
+            ("🔄 刷新", self.refresh_list, "#34495e"),
+        ]
+
+        for text, command, color in buttons:
+            btn = tk.Button(action_bar, text=text, font=('微软雅黑', 9),
+                          command=command, bg=color, fg='white',
+                          relief=tk.FLAT, padx=8, pady=4,
+                          cursor='hand2')
+            btn.pack(side=tk.LEFT, padx=3, pady=4)
+
+        self._create_file_list(center_frame)
         self._create_preview_panel(main_frame)
     
     def _create_sidebar(self, parent):
@@ -1184,19 +1230,13 @@ class UIManager:
     def _create_file_list(self, parent):
         """创建中间文件列表"""
         list_frame = tk.Frame(parent, bg='#ffffff')
-        list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        
-        header = tk.Frame(list_frame, bg='#2c3e50', height=40)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        tk.Label(header, text="📋 文件列表", font=('微软雅黑', 11, 'bold'),
-                bg='#2c3e50', fg='white').pack(pady=8)
-        
+        list_frame.pack(fill=tk.BOTH, expand=True)
+
         tree_frame = tk.Frame(list_frame, bg='#ffffff')
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+
         columns = ('icon', 'name', 'type', 'size', 'category', 'status', 'update_time')
-        self.file_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', 
+        self.file_tree = ttk.Treeview(tree_frame, columns=columns, show='headings',
                                       selectmode='extended')
         
         self.file_tree.heading('icon', text='')
@@ -1326,6 +1366,12 @@ class UIManager:
         else:
             self.path_label.config(text="📍 当前位置：根目录")
             self.back_btn.config(state=tk.DISABLED)
+        # 更新滚动区域
+        self.path_canvas.update_idletasks()
+        self.path_canvas.configure(scrollregion=self.path_canvas.bbox("all"))
+        canvas_w = self.path_canvas.winfo_width()
+        label_w = self.path_label.winfo_reqwidth()
+        self.path_canvas.itemconfig(self.path_label_id, width=max(canvas_w, label_w))
     
     def _go_back(self):
         """返回上一级目录"""
