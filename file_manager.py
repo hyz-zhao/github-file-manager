@@ -1008,35 +1008,61 @@ class UIManager:
         self.refresh_list()
     
     def _setup_styles(self):
-        """设置界面样式"""
+        """设置现代化界面样式"""
         style = ttk.Style()
         style.theme_use('clam')
-        
-        style.configure('Title.TLabel', font=('微软雅黑', 16, 'bold'), foreground='#2c3e50')
-        style.configure('Status.TLabel', font=('微软雅黑', 9), foreground='#7f8c8d')
-        style.configure('Info.TLabel', font=('微软雅黑', 10), foreground='#34495e')
-        
-        style.configure('Toolbar.TButton', font=('微软雅黑', 10), padding=8)
-        style.configure('Sidebar.TButton', font=('微软雅黑', 10), padding=10)
-        style.configure('Action.TButton', font=('微软雅黑', 10, 'bold'), padding=8)
-        
-        style.configure('Treeview', font=('微软雅黑', 10), rowheight=32, 
-                       background='#ffffff', fieldbackground='#ffffff')
-        style.configure('Treeview.Heading', font=('微软雅黑', 10, 'bold'),
-                       background='#ecf0f1', foreground='#2c3e50')
-        
-        style.map('Treeview', background=[('selected', '#3498db')],
-                 foreground=[('selected', 'white')])
-        
-        style.configure('Card.TFrame', background='#ffffff')
-        style.configure('Sidebar.TFrame', background='#f8f9fa')
+
+        COLORS = {
+            'primary': '#6366f1',
+            'primary_hover': '#4f46e5',
+            'secondary': '#64748b',
+            'success': '#22c55e',
+            'warning': '#f59e0b',
+            'danger': '#ef4444',
+            'info': '#06b6d4',
+            'dark': '#1e293b',
+            'gray_100': '#f1f5f9',
+            'gray_200': '#e2e8f0',
+            'gray_300': '#cbd5e1',
+            'gray_400': '#94a3b8',
+            'gray_500': '#64748b',
+            'white': '#ffffff',
+        }
+
+        style.configure('Title.TLabel', font=('Microsoft YaHei', 18, 'bold'), foreground=COLORS['dark'])
+        style.configure('Status.TLabel', font=('Microsoft YaHei', 9), foreground=COLORS['gray_500'])
+        style.configure('Info.TLabel', font=('Microsoft YaHei', 10), foreground=COLORS['dark'])
+
+        style.configure('Toolbar.TButton', font=('Microsoft YaHei', 10), padding=8)
+        style.configure('Sidebar.TButton', font=('Microsoft YaHei', 10), padding=10)
+        style.configure('Action.TButton', font=('Microsoft YaHei', 10, 'bold'), padding=8)
+
+        style.configure('Modern.TFrame', background=COLORS['white'])
+
+        style.configure('Treeview', font=('Microsoft YaHei', 10), rowheight=36,
+                       background=COLORS['white'], fieldbackground=COLORS['white'],
+                       borderwidth=0, relief='flat')
+        style.configure('Treeview.Heading', font=('Microsoft YaHei', 10, 'bold'),
+                       background=COLORS['gray_100'], foreground=COLORS['dark'],
+                       borderwidth=0, relief='flat', padding=8)
+
+        style.map('Treeview',
+                 background=[('selected', COLORS['primary']), ('hover', COLORS['gray_100'])],
+                 foreground=[('selected', COLORS['white'])])
+
+        style.configure('Card.TFrame', background=COLORS['white'], relief='flat', borderwidth=0)
+
+        style.configure('Sidebar.TFrame', background=COLORS['gray_100'])
+
+        self._style = style
+        self._colors = COLORS
         
     def _create_ui(self):
         """创建主界面"""
         self.root.title("GitHub文件同步管理器 v3.0")
         self.root.geometry("1300x750")
         self.root.minsize(1000, 650)
-        self.root.configure(bg='#f5f6fa')
+        self.root.configure(bg=self._colors['gray_100'])
         
         self._create_toolbar()
         self._create_main_area()
@@ -1044,74 +1070,75 @@ class UIManager:
     
     def _create_toolbar(self):
         """创建顶部工具栏"""
-        # 第一行：标题 + 路径导航栏（可滚动） + 搜索框
-        toolbar_frame = tk.Frame(self.root, bg='#ffffff')
-        toolbar_frame.pack(fill=tk.X)
+        COLORS = self._colors
 
-        # 左侧：标题
-        left_frame = tk.Frame(toolbar_frame, bg='#ffffff')
-        left_frame.pack(side=tk.LEFT, padx=15, pady=8)
+        toolbar_frame = tk.Frame(self.root, bg=COLORS['white'], height=60)
+        toolbar_frame.pack(fill=tk.X)
+        toolbar_frame.pack_propagate(False)
+
+        left_frame = tk.Frame(toolbar_frame, bg=COLORS['white'])
+        left_frame.pack(side=tk.LEFT, padx=20, pady=10)
 
         title_label = tk.Label(left_frame, text="📁 文件管理器",
-                              font=('微软雅黑', 18, 'bold'),
-                              fg='#2c3e50', bg='#ffffff')
+                              font=('Microsoft YaHei', 20, 'bold'),
+                              fg=COLORS['primary'], bg=COLORS['white'])
         title_label.pack(side=tk.LEFT)
 
         version_label = tk.Label(left_frame, text="v3.0",
-                                font=('微软雅黑', 9),
-                                fg='#95a5a6', bg='#ffffff')
-        version_label.pack(side=tk.LEFT, padx=5, pady=8)
+                                font=('Microsoft YaHei', 9),
+                                fg=COLORS['gray_400'], bg=COLORS['white'])
+        version_label.pack(side=tk.LEFT, padx=8, pady=10)
 
-        # 右侧：搜索框
-        search_frame = tk.Frame(toolbar_frame, bg='#ffffff')
-        search_frame.pack(side=tk.RIGHT, padx=(5, 15), pady=8)
+        search_frame = tk.Frame(toolbar_frame, bg=COLORS['white'])
+        search_frame.pack(side=tk.RIGHT, padx=(5, 20), pady=12)
 
-        search_inner = tk.Frame(search_frame, bg='#ecf0f1', padx=5, pady=3)
+        search_inner = tk.Frame(search_frame, bg=COLORS['gray_100'], padx=8, pady=4)
         search_inner.pack()
 
-        tk.Label(search_inner, text="🔍", font=('微软雅黑', 12),
-                bg='#ecf0f1', fg='#7f8c8d').pack(side=tk.LEFT)
+        tk.Label(search_inner, text="🔍",
+                font=('Microsoft YaHei', 11), bg=COLORS['gray_100'],
+                fg=COLORS['gray_500']).pack(side=tk.LEFT)
 
         search_entry = tk.Entry(search_inner, textvariable=self.search_var,
-                               width=20, font=('微软雅黑', 10),
-                               relief=tk.FLAT, bg='#ecf0f1',
-                               highlightthickness=0)
-        search_entry.pack(side=tk.LEFT, padx=5)
+                               width=18, font=('Microsoft YaHei', 10),
+                               relief=tk.FLAT, bg=COLORS['gray_100'],
+                               highlightthickness=0, insertbackground=COLORS['primary'])
+        search_entry.pack(side=tk.LEFT, padx=6)
         search_entry.bind('<KeyRelease>', self._on_search)
 
-        # 中间：路径导航栏（可水平滚动）
-        nav_outer = tk.Frame(toolbar_frame, bg='#ffffff')
-        nav_outer.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=8)
+        nav_outer = tk.Frame(toolbar_frame, bg=COLORS['white'])
+        nav_outer.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=10)
 
-        nav_top = tk.Frame(nav_outer, bg='#ffffff')
+        nav_top = tk.Frame(nav_outer, bg=COLORS['white'])
         nav_top.pack(fill=tk.X)
 
-        # 返回按钮固定宽度，不被挤压
-        self.back_btn = tk.Button(nav_top, text="⬆️ 返回", font=('微软雅黑', 9),
-                                  command=self._go_back, bg='#95a5a6', fg='white',
-                                  relief=tk.FLAT, padx=8, pady=2, cursor='hand2',
-                                  state=tk.DISABLED, width=6)
-        self.back_btn.pack(side=tk.LEFT, padx=(0, 5))
+        self.back_btn = tk.Button(nav_top, text="⬆️ 返回",
+                                  command=self._go_back,
+                                  bg=COLORS['gray_300'], fg=COLORS['dark'],
+                                  font=('Microsoft YaHei', 9, 'bold'),
+                                  relief=tk.FLAT, padx=10, pady=4,
+                                  cursor='hand2', state=tk.DISABLED,
+                                  activebackground=COLORS['primary'],
+                                  activeforeground=COLORS['white'],
+                                  width=6)
+        self.back_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        # 路径文字放在 Canvas 中，支持水平滚动
-        path_container = tk.Frame(nav_top, bg='#ffffff')
+        path_container = tk.Frame(nav_top, bg=COLORS['white'])
         path_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.path_canvas = tk.Canvas(path_container, bg='#ffffff', highlightthickness=0, height=22)
+        self.path_canvas = tk.Canvas(path_container, bg=COLORS['white'], highlightthickness=0, height=24)
         self.path_canvas.pack(side=tk.TOP, fill=tk.X, expand=True)
 
         self.path_label = tk.Label(self.path_canvas, text="📍 当前位置：根目录",
-                                   font=('微软雅黑', 10), fg='#2c3e50', bg='#ffffff',
+                                   font=('Microsoft YaHei', 10), fg=COLORS['dark'], bg=COLORS['white'],
                                    anchor='w')
         self.path_label_id = self.path_canvas.create_window(0, 0, window=self.path_label, anchor='nw')
 
-        # 水平滚动条
         path_hscroll = tk.Scrollbar(path_container, orient=tk.HORIZONTAL,
                                      command=self.path_canvas.xview)
         path_hscroll.pack(side=tk.BOTTOM, fill=tk.X)
         self.path_canvas.configure(xscrollcommand=path_hscroll.set)
 
-        # 鼠标滚轮水平滚动路径
         def _on_path_mousewheel(event):
             self.path_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
         self.path_canvas.bind_all('<Shift-MouseWheel>', _on_path_mousewheel)
@@ -1127,56 +1154,67 @@ class UIManager:
     
     def _create_main_area(self):
         """创建主区域（三栏布局）"""
-        main_frame = tk.Frame(self.root, bg='#f5f6fa')
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        COLORS = self._colors
+
+        main_frame = tk.Frame(self.root, bg=COLORS['gray_100'])
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 10))
 
         self._create_sidebar(main_frame)
 
-        center_frame = tk.Frame(main_frame, bg='#ffffff')
-        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        center_frame = tk.Frame(main_frame, bg=COLORS['white'], relief='flat', bd=0)
+        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 12))
 
-        list_header = tk.Frame(center_frame, bg='#2c3e50', height=35)
+        list_header = tk.Frame(center_frame, bg=COLORS['primary'], height=38)
         list_header.pack(fill=tk.X)
         list_header.pack_propagate(False)
-        tk.Label(list_header, text="📋 文件列表", font=('微软雅黑', 11, 'bold'),
-                bg='#2c3e50', fg='white').pack(pady=6)
+        tk.Label(list_header, text="📋 文件列表", font=('Microsoft YaHei', 12, 'bold'),
+                bg=COLORS['primary'], fg='white').pack(pady=8)
 
-        action_bar = tk.Frame(center_frame, bg='#f8f9fa', height=38)
-        action_bar.pack(fill=tk.X, padx=5, pady=(3, 0))
+        action_bar = tk.Frame(center_frame, bg=COLORS['gray_100'], height=46)
+        action_bar.pack(fill=tk.X, padx=8, pady=(8, 0))
         action_bar.pack_propagate(False)
 
         buttons = [
-            ("📤 上传", self._on_upload_file, "#3498db"),
-            ("📁 文件夹", self._on_upload_folder, "#9b59b6"),
-            ("➕ 新建", self._on_new_folder, "#1abc9c"),
-            ("⬇️ 下载", self._on_download, "#27ae60"),
-            ("✏️ 重命名", self._on_rename, "#f39c12"),
-            ("🗑️ 删除", self._on_delete, "#e74c3c"),
-            ("🔄 刷新", self.refresh_list, "#34495e"),
+            ("📤 上传", self._on_upload_file, "#6366f1"),
+            ("📁 文件夹", self._on_upload_folder, "#8b5cf6"),
+            ("➕ 新建", self._on_new_folder, "#22c55e"),
+            ("⬇️ 下载", self._on_download, "#06b6d4"),
+            ("✏️ 重命名", self._on_rename, "#f59e0b"),
+            ("🗑️ 删除", self._on_delete, "#ef4444"),
+            ("🔄 刷新", self.refresh_list, "#64748b"),
         ]
 
+        def on_enter(e, btn, color):
+            btn.configure(bg=color, relief=tk.SUNKEN)
+        def on_leave(e, btn, color):
+            btn.configure(bg=color, relief=tk.FLAT)
+
         for text, command, color in buttons:
-            btn = tk.Button(action_bar, text=text, font=('微软雅黑', 9),
+            btn = tk.Button(action_bar, text=text, font=('Microsoft YaHei', 9, 'bold'),
                           command=command, bg=color, fg='white',
-                          relief=tk.FLAT, padx=8, pady=4,
-                          cursor='hand2')
-            btn.pack(side=tk.LEFT, padx=3, pady=4)
+                          relief=tk.FLAT, padx=10, pady=5,
+                          cursor='hand2', bd=0, highlightthickness=0)
+            btn.pack(side=tk.LEFT, padx=3, pady=5)
+            btn.bind("<Enter>", lambda e, b=btn, c=color: on_enter(e, b, c))
+            btn.bind("<Leave>", lambda e, b=btn, c=color: on_leave(e, b, c))
 
         self._create_file_list(center_frame)
         self._create_preview_panel(main_frame)
     
     def _create_sidebar(self, parent):
         """创建左侧边栏"""
-        sidebar_frame = tk.Frame(parent, bg='#ffffff', width=180)
-        sidebar_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        COLORS = self._colors
+
+        sidebar_frame = tk.Frame(parent, bg=COLORS['white'], width=190, relief='flat', bd=0)
+        sidebar_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
         sidebar_frame.pack_propagate(False)
-        
-        header = tk.Frame(sidebar_frame, bg='#3498db', height=40)
+
+        header = tk.Frame(sidebar_frame, bg=COLORS['primary'], height=42)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
-        tk.Label(header, text="📂 文件分类", font=('微软雅黑', 11, 'bold'),
-                bg='#3498db', fg='white').pack(pady=8)
-        
+        tk.Label(header, text="📂 文件分类", font=('Microsoft YaHei', 12, 'bold'),
+                bg=COLORS['primary'], fg='white').pack(pady=10)
+
         categories = [
             ("📋 全部", "全部"),
             ("📁 文件夹", "文件夹"),
@@ -1186,26 +1224,31 @@ class UIManager:
             ("📦 压缩包", "压缩包"),
             ("📎 其他", "其他")
         ]
-        
+
         self.category_buttons = {}
+        def on_cat_enter(e, b):
+            b.configure(bg=COLORS['gray_100'])
+        def on_cat_leave(e, b):
+            b.configure(bg=COLORS['white'])
+
         for text, category in categories:
-            btn = tk.Button(sidebar_frame, text=text, font=('微软雅黑', 10),
+            btn = tk.Button(sidebar_frame, text=text, font=('Microsoft YaHei', 10),
                           command=lambda c=category: self._on_category_change(c),
-                          bg='#ffffff', fg='#2c3e50', relief=tk.FLAT,
-                          anchor='w', padx=15, pady=8, cursor='hand2')
-            btn.pack(fill=tk.X, padx=5, pady=1)
+                          bg=COLORS['white'], fg=COLORS['dark'], relief=tk.FLAT,
+                          anchor='w', padx=18, pady=10, cursor='hand2', bd=0)
+            btn.pack(fill=tk.X, padx=6, pady=1)
             self.category_buttons[category] = btn
-            
-            btn.bind('<Enter>', lambda e, b=btn: b.configure(bg='#ecf0f1'))
-            btn.bind('<Leave>', lambda e, b=btn: b.configure(bg='#ffffff'))
-        
-        separator = tk.Frame(sidebar_frame, bg='#ecf0f1', height=2)
-        separator.pack(fill=tk.X, padx=10, pady=10)
-        
-        github_header = tk.Frame(sidebar_frame, bg='#27ae60', height=40)
+            btn.bind('<Enter>', lambda e, b=btn: on_cat_enter(e, b))
+            btn.bind('<Leave>', lambda e, b=btn: on_cat_leave(e, b))
+
+        separator = tk.Frame(sidebar_frame, bg=COLORS['gray_200'], height=1)
+        separator.pack(fill=tk.X, padx=10, pady=12)
+
+        github_header = tk.Frame(sidebar_frame, bg=COLORS['success'], height=40)
         github_header.pack(fill=tk.X)
-        tk.Label(github_header, text="☁️ GitHub同步", font=('微软雅黑', 11, 'bold'),
-                bg='#27ae60', fg='white').pack(pady=8)
+        github_header.pack_propagate(False)
+        tk.Label(github_header, text="☁️ GitHub同步", font=('Microsoft YaHei', 11, 'bold'),
+                bg=COLORS['success'], fg='white').pack(pady=10)
         
         github_buttons = [
             ("⚙️ 配置GitHub", self._show_github_config),
@@ -1269,19 +1312,21 @@ class UIManager:
     
     def _create_preview_panel(self, parent):
         """创建右侧预览面板"""
-        preview_frame = tk.Frame(parent, bg='#ffffff', width=320)
+        COLORS = self._colors
+
+        preview_frame = tk.Frame(parent, bg=COLORS['white'], width=300, relief='flat', bd=0)
         preview_frame.pack(side=tk.RIGHT, fill=tk.Y)
         preview_frame.pack_propagate(False)
-        
-        header = tk.Frame(preview_frame, bg='#9b59b6', height=40)
+
+        header = tk.Frame(preview_frame, bg="#8b5cf6", height=42)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
-        tk.Label(header, text="👁️ 文件详情", font=('微软雅黑', 11, 'bold'),
-                bg='#9b59b6', fg='white').pack(pady=8)
-        
-        detail_frame = tk.Frame(preview_frame, bg='#ffffff', padx=10, pady=10)
+        tk.Label(header, text="👁️ 文件详情", font=('Microsoft YaHei', 12, 'bold'),
+                bg="#8b5cf6", fg='white').pack(pady=10)
+
+        detail_frame = tk.Frame(preview_frame, bg=COLORS['white'], padx=15, pady=12)
         detail_frame.pack(fill=tk.X)
-        
+
         self.detail_labels = {}
         detail_items = [
             ('file_name', '名称'),
@@ -1290,9 +1335,9 @@ class UIManager:
             ('update_time', '修改时间'),
             ('sync_status', '同步状态')
         ]
-        
+
         for key, label_text in detail_items:
-            frame = tk.Frame(detail_frame, bg='#ffffff')
+            frame = tk.Frame(detail_frame, bg=COLORS['white'])
             frame.pack(fill=tk.X, pady=3)
             
             tk.Label(frame, text=f"{label_text}：", font=('微软雅黑', 9),
@@ -1337,17 +1382,19 @@ class UIManager:
     
     def _create_status_bar(self):
         """创建底部状态栏"""
-        status_frame = tk.Frame(self.root, bg='#2c3e50', height=30)
+        COLORS = self._colors
+
+        status_frame = tk.Frame(self.root, bg=COLORS['dark'], height=28)
         status_frame.pack(fill=tk.X, side=tk.BOTTOM)
         status_frame.pack_propagate(False)
-        
-        self.status_label = tk.Label(status_frame, text="✓ 就绪", 
-                                    font=('微软雅黑', 9), fg='white', bg='#2c3e50')
-        self.status_label.pack(side=tk.LEFT, padx=10, pady=5)
-        
-        self.file_count_label = tk.Label(status_frame, text="共 0 个项目", 
-                                         font=('微软雅黑', 9), fg='white', bg='#2c3e50')
-        self.file_count_label.pack(side=tk.RIGHT, padx=10, pady=5)
+
+        self.status_label = tk.Label(status_frame, text="✓ 就绪",
+                                    font=('Microsoft YaHei', 9), fg='white', bg=COLORS['dark'])
+        self.status_label.pack(side=tk.LEFT, padx=12, pady=4)
+
+        self.file_count_label = tk.Label(status_frame, text="共 0 个项目",
+                                         font=('Microsoft YaHei', 9), fg='white', bg=COLORS['dark'])
+        self.file_count_label.pack(side=tk.RIGHT, padx=12, pady=4)
     
     def _bind_events(self):
         """绑定事件"""
