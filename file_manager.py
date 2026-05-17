@@ -1175,9 +1175,9 @@ class UIManager:
         action_bar.pack_propagate(False)
 
         buttons = [
-            ("📤 上传", self._on_upload_file, "#6366f1"),
-            ("📁 文件夹", self._on_upload_folder, "#8b5cf6"),
-            ("➕ 新建", self._on_new_folder, "#22c55e"),
+            ("📤 上传文件", self._on_upload_file, "#6366f1"),
+            ("📁 打开文件夹", self._on_upload_folder, "#8b5cf6"),
+            ("➕ 新建文件夹", self._on_new_folder, "#22c55e"),
             ("⬇️ 下载", self._on_download, "#06b6d4"),
             ("✏️ 重命名", self._on_rename, "#f59e0b"),
             ("🗑️ 删除", self._on_delete, "#ef4444"),
