@@ -4,6 +4,20 @@ import pytest
 from unittest.mock import patch, MagicMock
 from file_manager import GitHubSync
 
+class MockGithubException(Exception):
+    """模拟 GithubException"""
+    def __init__(self, status, data, headers=None):
+        self.status = status
+        self.data = data
+        self.headers = headers or {}
+        super().__init__(data.get('message', ''))
+
+@pytest.fixture(autouse=True)
+def mock_github_exception():
+    """自动为所有测试 mock GithubException"""
+    with patch("file_manager.GithubException", MockGithubException):
+        yield
+
 
 class TestGitHubSyncInit:
     """测试初始化状态"""
@@ -121,7 +135,7 @@ class TestPushFile:
         sync.connected = True
         sync.branch = "main"
         sync.repo = MagicMock()
-        sync.repo.get_contents.side_effect = Exception("Not Found")
+        sync.repo.get_contents.side_effect = MockGithubException(404, {"message": "Not Found"})
         sync.repo.create_file.return_value = MagicMock()
 
         src = tmp_path / "new.txt"
