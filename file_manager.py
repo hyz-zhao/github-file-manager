@@ -224,15 +224,16 @@ class GitHubSync:
         """
         if not self.connected:
             return False, "未连接到GitHub，请先配置连接"
-        
+
         try:
             with open(local_path, 'rb') as f:
                 content = f.read()
-            
+
             file_size = len(content)
-            if file_size > 100 * 1024 * 1024:
-                return False, "文件过大，GitHub单文件限制100MB"
-            
+            MAX_FILE_SIZE = 100 * 1024 * 1024
+            if file_size > MAX_FILE_SIZE:
+                return False, f"文件过大，GitHub单文件限制{MAX_FILE_SIZE // (1024*1024)}MB"
+
             try:
                 existing_file = self.repo.get_contents(github_path, ref=self.branch)
                 self.repo.update_file(
@@ -243,23 +244,28 @@ class GitHubSync:
                     branch=self.branch
                 )
                 return True, "文件更新成功"
-            except:
-                self.repo.create_file(
-                    path=github_path,
-                    message=f"上传文件: {os.path.basename(github_path)}",
-                    content=content,
-                    branch=self.branch
-                )
-                return True, "文件上传成功"
-                
-        except Exception as e:
+            except GithubException as e:
+                if e.status == 404:
+                    self.repo.create_file(
+                        path=github_path,
+                        message=f"上传文件: {os.path.basename(github_path)}",
+                        content=content,
+                        branch=self.branch
+                    )
+                    return True, "文件上传成功"
+                else:
+                    raise
+
+        except GithubException as e:
             error_msg = str(e)
-            if "403" in error_msg:
+            if "403" in error_msg or e.status == 403:
                 return False, "权限不足，请检查令牌是否有写入权限"
-            elif "409" in error_msg:
+            elif "409" in error_msg or e.status == 409:
                 return False, "文件冲突，请先拉取最新版本"
             else:
-                return False, f"推送失败：{error_msg}"
+                return False, f"推送失败：{e.data.get('message', error_msg)}"
+        except Exception as e:
+            return False, f"推送失败：{e}"
     
     def push_folder(self, local_folder: str, github_base_path: str) -> Tuple[int, int, List[str]]:
         """
@@ -459,7 +465,7 @@ class FileStore:
             return ""
         try:
             return base64.b64decode(encrypted.encode()).decode()
-        except:
+        except (ValueError, base64.binascii.Error, UnicodeDecodeError):
             return ""
     
     def load_config(self) -> bool:
@@ -1402,7 +1408,12 @@ class UIManager:
         self.file_tree.bind('<Double-1>', self._on_file_double_click)
         self.file_tree.bind('<Button-3>', self._show_context_menu)
         self.file_tree.bind('<Control-a>', self._select_all)
-        
+
+        self.root.bind('<Delete>', lambda e: self._on_delete())
+        self.root.bind('<Return>', lambda e: self._on_file_double_click(None) if self.get_selected_file() else None)
+        self.root.bind('<BackSpace>', lambda e: self._go_back())
+        self.root.bind('<F5>', lambda e: self.refresh_list())
+
         self._setup_drag_drop()
     
     def _update_path_display(self):
@@ -1589,13 +1600,7 @@ class UIManager:
                 file_paths = []
                 for f in files:
                     if isinstance(f, bytes):
-                        try:
-                            file_paths.append(f.decode('gbk'))
-                        except:
-                            try:
-                                file_paths.append(f.decode('utf-8'))
-                            except:
-                                file_paths.append(f.decode('latin-1', errors='replace'))
+                        file_paths.append(os.fsdecode(f))
                     else:
                         file_paths.append(f)
                 self._handle_dropped_files(file_paths)
