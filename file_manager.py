@@ -1872,7 +1872,8 @@ class UIManager:
                         font=('微软雅黑', 10), relief=tk.FLAT, bg='#ecf0f1')
         entry.pack(pady=5, ipady=5)
         entry.focus()
-        
+        entry.bind('<Return>', lambda e: do_create())
+
         def do_create():
             folder_name = name_var.get().strip()
             if folder_name:
@@ -1988,7 +1989,8 @@ class UIManager:
         entry.pack(side=tk.LEFT, padx=5, pady=5)
         entry.select_range(0, tk.END)
         entry.focus()
-        
+        entry.bind('<Return>', lambda e: do_rename())
+
         def do_rename():
             new_name = new_name_var.get().strip()
             if new_name:
