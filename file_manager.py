@@ -2424,6 +2424,55 @@ class UIManager:
                     detail += f"\n...等共 {len(errors)} 个错误"
                 self.show_error(f"删除完成：成功 {success_count}，失败 {fail_count}\n{detail}")
 
+        def download_cloud_files():
+            selections = cloud_tree.selection()
+            if not selections:
+                self.show_error("请先选择要下载的文件或文件夹")
+                return
+
+            dest_dir = filedialog.askdirectory(title="选择保存位置")
+            if not dest_dir:
+                return
+
+            files_to_download = []
+            folders_to_download = []
+            for item_path in selections:
+                values = cloud_tree.item(item_path, 'values')
+                if values and values[1] == "文件夹":
+                    folders_to_download.append(item_path)
+                else:
+                    files_to_download.append(item_path)
+
+            success_count = 0
+            fail_count = 0
+            errors = []
+
+            for github_path in files_to_download:
+                file_name = os.path.basename(github_path)
+                local_path = os.path.join(dest_dir, file_name)
+                success, msg = self.github_sync.pull_file(github_path, local_path)
+                if success:
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    errors.append(f"{file_name}: {msg}")
+
+            for github_path in folders_to_download:
+                folder_name = os.path.basename(github_path)
+                local_path = os.path.join(dest_dir, folder_name)
+                s, f, errs = self.github_sync.pull_folder(github_path, local_path)
+                success_count += s
+                fail_count += f
+                errors.extend(errs)
+
+            if fail_count == 0:
+                self.show_success(f"成功下载 {success_count} 个项目到：{dest_dir}")
+            else:
+                detail = "\n".join(errors[:5])
+                if len(errors) > 5:
+                    detail += f"\n...等共 {len(errors)} 个错误"
+                self.show_error(f"下载完成：成功 {success_count}，失败 {fail_count}\n{detail}")
+
         cloud_tree.bind('<Double-1>', enter_cloud_folder)
 
         # 右键菜单
@@ -2434,6 +2483,7 @@ class UIManager:
                     cloud_tree.selection_set(item)
 
                 menu = tk.Menu(dialog, tearoff=0, font=('微软雅黑', 9))
+                menu.add_command(label="📥 下载选中", command=download_cloud_files)
                 menu.add_command(label="🗑 删除选中", command=delete_cloud_files)
                 menu.add_separator()
                 menu.add_command(label="🔄 刷新", command=refresh_cloud_list)
@@ -2450,6 +2500,9 @@ class UIManager:
         btn_frame = tk.Frame(dialog, bg='#ffffff')
         btn_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=15, pady=10)
 
+        tk.Button(btn_frame, text="📥 下载选中", font=('Microsoft YaHei', 10),
+                 command=download_cloud_files, bg='#27ae60', fg='white',
+                 relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
         tk.Button(btn_frame, text="🗑 删除选中", font=('Microsoft YaHei', 10),
                  command=delete_cloud_files, bg='#e74c3c', fg='white',
                  relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
