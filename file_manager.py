@@ -1260,6 +1260,7 @@ class UIManager:
             ("⚙️ 配置GitHub", self._show_github_config),
             ("⬆️ 推送到云端", self._push_to_github),
             ("⬇️ 拉取到本地", self._pull_from_github),
+            ("☁️ 管理云端文件", self._manage_github_files),
         ]
         
         for text, command in github_buttons:
@@ -2269,6 +2270,198 @@ class UIManager:
             ))
         
         threading.Thread(target=pull_task, daemon=True).start()
+
+    def _manage_github_files(self):
+        """管理GitHub云端文件（浏览和删除）"""
+        if not self.github_sync.connected:
+            self.show_error("请先配置并连接GitHub")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("云端文件管理")
+        dialog.geometry("700x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg='#ffffff')
+
+        # 标题
+        tk.Label(dialog, text="☁️ 云端文件管理",
+                font=('Microsoft YaHei', 14, 'bold'), bg='#ffffff', fg='#2c3e50').pack(pady=10)
+
+        # 路径和返回按钮
+        nav_frame = tk.Frame(dialog, bg='#ffffff')
+        nav_frame.pack(fill=tk.X, padx=15, pady=(0, 5))
+
+        cloud_path_var = tk.StringVar(value="/")
+        tk.Label(nav_frame, textvariable=cloud_path_var,
+                font=('Microsoft YaHei', 10), bg='#ffffff', fg='#2c3e50').pack(side=tk.LEFT)
+
+        cloud_folder_history = []
+
+        # 文件列表
+        list_frame = tk.Frame(dialog, bg='#ffffff')
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
+
+        columns = ('name', 'type', 'size')
+        cloud_tree = ttk.Treeview(list_frame, columns=columns, show='headings',
+                                  selectmode='extended')
+        cloud_tree.heading('name', text='名称')
+        cloud_tree.heading('type', text='类型')
+        cloud_tree.heading('size', text='大小')
+        cloud_tree.column('name', width=350)
+        cloud_tree.column('type', width=100, anchor='center')
+        cloud_tree.column('size', width=120, anchor='center')
+
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=cloud_tree.yview)
+        cloud_tree.configure(yscrollcommand=scrollbar.set)
+        cloud_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def get_current_path():
+            path = cloud_path_var.get()
+            return "" if path == "/" else path.lstrip("/")
+
+        def refresh_cloud_list():
+            for item in cloud_tree.get_children():
+                cloud_tree.delete(item)
+
+            current_path = get_current_path()
+            success, file_list, msg = self.github_sync.get_file_list(current_path)
+            if not success:
+                self.show_error(f"获取文件列表失败：{msg}")
+                return
+
+            folders = sorted([f for f in file_list if f['is_folder']], key=lambda x: x['name'].lower())
+            files = sorted([f for f in file_list if not f['is_folder']], key=lambda x: x['name'].lower())
+
+            for f in folders:
+                cloud_tree.insert('', tk.END, iid=f['path'], values=(
+                    f"📁 {f['name']}", "文件夹", "-"
+                ))
+
+            for f in files:
+                size = f['size']
+                if size < 1024:
+                    size_str = f"{size} B"
+                elif size < 1024 * 1024:
+                    size_str = f"{size / 1024:.1f} KB"
+                else:
+                    size_str = f"{size / (1024*1024):.1f} MB"
+
+                _, ext = os.path.splitext(f['name'])
+                cloud_tree.insert('', tk.END, iid=f['path'], values=(
+                    f"📄 {f['name']}", ext or "文件", size_str
+                ))
+
+        def go_back():
+            if cloud_folder_history:
+                prev_path = cloud_folder_history.pop()
+                cloud_path_var.set(prev_path if prev_path else "/")
+                refresh_cloud_list()
+
+        def enter_cloud_folder(event=None):
+            selection = cloud_tree.selection()
+            if not selection:
+                return
+            item_path = selection[0]
+            current_path = get_current_path()
+            success, file_list, _ = self.github_sync.get_file_list(current_path)
+            if success:
+                for f in file_list:
+                    if f['path'] == item_path and f['is_folder']:
+                        cloud_folder_history.append(get_current_path())
+                        cloud_path_var.set("/" + item_path if not item_path.startswith("/") else item_path)
+                        refresh_cloud_list()
+                        return
+
+        def delete_cloud_files():
+            selections = cloud_tree.selection()
+            if not selections:
+                self.show_error("请先选择要删除的文件")
+                return
+
+            files_to_delete = []
+            folders_to_delete = []
+            for item_path in selections:
+                values = cloud_tree.item(item_path, 'values')
+                if values and values[1] == "文件夹":
+                    folders_to_delete.append(item_path)
+                else:
+                    files_to_delete.append(item_path)
+
+            parts = []
+            if files_to_delete:
+                parts.append(f"{len(files_to_delete)} 个文件")
+            if folders_to_delete:
+                parts.append(f"{len(folders_to_delete)} 个文件夹")
+            warning = ""
+            if folders_to_delete:
+                warning = "\n\n注意：删除文件夹会删除其中所有内容！"
+
+            if not messagebox.askyesno("确认删除",
+                                       f"确定要从 GitHub 删除 {' 和 '.join(parts)} 吗？{warning}\n\n此操作不可恢复！"):
+                return
+
+            success_count = 0
+            fail_count = 0
+            errors = []
+
+            for item_path in files_to_delete + folders_to_delete:
+                success, msg = self.github_sync.delete_file(item_path)
+                if success:
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    errors.append(f"{os.path.basename(item_path)}: {msg}")
+
+            refresh_cloud_list()
+
+            if fail_count == 0:
+                self.show_success(f"成功删除 {success_count} 个项目")
+            else:
+                detail = "\n".join(errors[:5])
+                if len(errors) > 5:
+                    detail += f"\n...等共 {len(errors)} 个错误"
+                self.show_error(f"删除完成：成功 {success_count}，失败 {fail_count}\n{detail}")
+
+        cloud_tree.bind('<Double-1>', enter_cloud_folder)
+
+        # 右键菜单
+        def show_cloud_context_menu(event):
+            item = cloud_tree.identify_row(event.y)
+            if item:
+                if item not in cloud_tree.selection():
+                    cloud_tree.selection_set(item)
+
+                menu = tk.Menu(dialog, tearoff=0, font=('微软雅黑', 9))
+                menu.add_command(label="🗑 删除选中", command=delete_cloud_files)
+                menu.add_separator()
+                menu.add_command(label="🔄 刷新", command=refresh_cloud_list)
+                menu.post(event.x_root, event.y_root)
+
+        cloud_tree.bind('<Button-3>', show_cloud_context_menu)
+
+        # 返回按钮
+        tk.Button(nav_frame, text="⬆ 返回", font=('Microsoft YaHei', 9),
+                 command=go_back, bg='#95a5a6', fg='white',
+                 relief=tk.FLAT, padx=8, pady=2, cursor='hand2').pack(side=tk.RIGHT)
+
+        # 底部按钮（先打包，防止被 Treeview 挤出）
+        btn_frame = tk.Frame(dialog, bg='#ffffff')
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=15, pady=10)
+
+        tk.Button(btn_frame, text="🗑 删除选中", font=('Microsoft YaHei', 10),
+                 command=delete_cloud_files, bg='#e74c3c', fg='white',
+                 relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
+        tk.Button(btn_frame, text="🔄 刷新", font=('Microsoft YaHei', 10),
+                 command=refresh_cloud_list, bg='#3498db', fg='white',
+                 relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
+        tk.Button(btn_frame, text="关闭", font=('Microsoft YaHei', 10),
+                 command=dialog.destroy, bg='#95a5a6', fg='white',
+                 relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.RIGHT, padx=3)
+
+        # 初始加载
+        refresh_cloud_list()
 
 
 class FileManagerApp:
