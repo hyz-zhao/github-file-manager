@@ -1004,9 +1004,15 @@ class UIManager:
         self.selected_file_id = None
         self.current_category = "全部"
         self.search_var = tk.StringVar()
-        
+
         self.current_folder = None
         self.folder_history = []
+
+        # 云端视图状态
+        self.view_mode = 'local'  # 'local' 或 'cloud'
+        self.cloud_current_path = ""
+        self.cloud_folder_history = []
+        self.cloud_files_cache = []  # 缓存当前目录的云端文件列表
         
         self._setup_styles()
         self._create_ui()
@@ -1173,14 +1179,24 @@ class UIManager:
         list_header = tk.Frame(center_frame, bg=COLORS['primary'], height=38)
         list_header.pack(fill=tk.X)
         list_header.pack_propagate(False)
-        tk.Label(list_header, text="📋 文件列表", font=('Microsoft YaHei', 12, 'bold'),
-                bg=COLORS['primary'], fg='white').pack(pady=8)
+        self.list_header_label = tk.Label(list_header, text="📋 本地文件", font=('Microsoft YaHei', 12, 'bold'),
+                bg=COLORS['primary'], fg='white')
+        self.list_header_label.pack(pady=8)
 
         action_bar = tk.Frame(center_frame, bg=COLORS['gray_100'], height=46)
         action_bar.pack(fill=tk.X, padx=8, pady=(8, 0))
         action_bar.pack_propagate(False)
 
-        buttons = [
+        def on_enter(e, btn, color):
+            btn.configure(bg=color, relief=tk.SUNKEN)
+        def on_leave(e, btn, color):
+            btn.configure(bg=color, relief=tk.FLAT)
+
+        self.action_buttons_frame = action_bar
+        self._local_buttons = []
+        self._cloud_buttons = []
+
+        local_buttons_def = [
             ("📤 上传文件", self._on_upload_file, "#6366f1"),
             ("📁 打开文件夹", self._on_upload_folder, "#8b5cf6"),
             ("➕ 新建文件夹", self._on_new_folder, "#22c55e"),
@@ -1190,12 +1206,14 @@ class UIManager:
             ("🔄 刷新", self.refresh_list, "#64748b"),
         ]
 
-        def on_enter(e, btn, color):
-            btn.configure(bg=color, relief=tk.SUNKEN)
-        def on_leave(e, btn, color):
-            btn.configure(bg=color, relief=tk.FLAT)
+        cloud_buttons_def = [
+            ("📥 下载到本地", self._cloud_download, "#27ae60"),
+            ("🗑 从云端删除", self._cloud_delete, "#e74c3c"),
+            ("🔄 刷新", self.refresh_list, "#64748b"),
+            ("📂 返回本地", self._switch_to_local, "#3498db"),
+        ]
 
-        for text, command, color in buttons:
+        for text, command, color in local_buttons_def:
             btn = tk.Button(action_bar, text=text, font=('Microsoft YaHei', 9, 'bold'),
                           command=command, bg=color, fg='white',
                           relief=tk.FLAT, padx=10, pady=5,
@@ -1203,6 +1221,16 @@ class UIManager:
             btn.pack(side=tk.LEFT, padx=3, pady=5)
             btn.bind("<Enter>", lambda e, b=btn, c=color: on_enter(e, b, c))
             btn.bind("<Leave>", lambda e, b=btn, c=color: on_leave(e, b, c))
+            self._local_buttons.append(btn)
+
+        for text, command, color in cloud_buttons_def:
+            btn = tk.Button(action_bar, text=text, font=('Microsoft YaHei', 9, 'bold'),
+                          command=command, bg=color, fg='white',
+                          relief=tk.FLAT, padx=10, pady=5,
+                          cursor='hand2', bd=0, highlightthickness=0)
+            btn.bind("<Enter>", lambda e, b=btn, c=color: on_enter(e, b, c))
+            btn.bind("<Leave>", lambda e, b=btn, c=color: on_leave(e, b, c))
+            self._cloud_buttons.append(btn)
 
         self._create_file_list(center_frame)
         self._create_preview_panel(main_frame)
@@ -1419,12 +1447,17 @@ class UIManager:
     
     def _update_path_display(self):
         """更新路径显示"""
-        if self.current_folder:
-            self.path_label.config(text=f"📍 当前位置：{self.current_folder}")
+        if self.view_mode == 'cloud':
+            path = self.cloud_current_path if self.cloud_current_path else "根目录"
+            self.path_label.config(text=f"☁️ 云端位置：{path}（按返回可切回本地）")
             self.back_btn.config(state=tk.NORMAL)
         else:
-            self.path_label.config(text="📍 当前位置：根目录")
-            self.back_btn.config(state=tk.DISABLED)
+            if self.current_folder:
+                self.path_label.config(text=f"📍 当前位置：{self.current_folder}")
+                self.back_btn.config(state=tk.NORMAL)
+            else:
+                self.path_label.config(text="📍 当前位置：根目录")
+                self.back_btn.config(state=tk.DISABLED)
         # 更新滚动区域
         self.path_canvas.update_idletasks()
         self.path_canvas.configure(scrollregion=self.path_canvas.bbox("all"))
@@ -1434,50 +1467,77 @@ class UIManager:
     
     def _go_back(self):
         """返回上一级目录"""
-        if self.folder_history:
-            self.current_folder = self.folder_history.pop()
+        if self.view_mode == 'cloud':
+            if self.cloud_folder_history:
+                self.cloud_current_path = self.cloud_folder_history.pop()
+                self._update_path_display()
+                self.refresh_list()
+            else:
+                # 云端根目录时，返回本地视图
+                self._switch_to_local()
         else:
-            self.current_folder = None
-        
-        self._update_path_display()
-        self.refresh_list()
-    
+            if self.folder_history:
+                self.current_folder = self.folder_history.pop()
+            else:
+                self.current_folder = None
+            self._update_path_display()
+            self.refresh_list()
+
     def _enter_folder(self):
         """进入选中的文件夹"""
         file_item = self.get_selected_file()
         if not file_item:
             self.show_error("请先选择一个文件夹")
             return
-        
+
         if not file_item.is_folder:
             self.show_error("选中的不是文件夹")
             return
-        
-        if self.current_folder:
-            self.folder_history.append(self.current_folder)
-            self.current_folder = os.path.join(self.current_folder, file_item.file_name)
+
+        if self.view_mode == 'cloud':
+            # 从缓存中找到对应的云端路径
+            cloud_path = None
+            for f in self.cloud_files_cache:
+                if f['name'] == file_item.file_name and f['is_folder']:
+                    cloud_path = f['path']
+                    break
+            if cloud_path:
+                self.cloud_folder_history.append(self.cloud_current_path)
+                self.cloud_current_path = cloud_path
+                self._update_path_display()
+                self.refresh_list()
         else:
-            self.folder_history.append(None)
-            self.current_folder = file_item.file_name
-        
-        self._update_path_display()
-        self.refresh_list()
+            if self.current_folder:
+                self.folder_history.append(self.current_folder)
+                self.current_folder = os.path.join(self.current_folder, file_item.file_name)
+            else:
+                self.folder_history.append(None)
+                self.current_folder = file_item.file_name
+            self._update_path_display()
+            self.refresh_list()
     
     def refresh_list(self):
         """刷新文件列表"""
         for item in self.file_tree.get_children():
             self.file_tree.delete(item)
-        
+
+        if self.view_mode == 'cloud':
+            self._refresh_cloud_list()
+        else:
+            self._refresh_local_list()
+
+    def _refresh_local_list(self):
+        """刷新本地文件列表"""
         keyword = self.search_var.get()
         files = self.file_store.search(keyword, self.current_category, self.current_folder)
-        
+
         folders_first = sorted(files, key=lambda x: (not x.is_folder, x.file_name.lower()))
-        
+
         for file_item in folders_first:
             size_str = file_item.format_size()
             category = file_item.get_category()
             icon = file_item.get_icon()
-            
+
             if file_item.is_folder:
                 tag = 'folder'
             else:
@@ -1486,7 +1546,7 @@ class UIManager:
                     '未同步': 'unsynced',
                     '同步失败': 'failed'
                 }.get(file_item.sync_status, '')
-            
+
             self.file_tree.insert('', tk.END, iid=file_item.id, values=(
                 icon,
                 file_item.file_name,
@@ -1496,9 +1556,48 @@ class UIManager:
                 file_item.sync_status,
                 file_item.update_time
             ), tags=(tag,))
-        
+
         self.file_count_label.config(text=f"共 {len(files)} 个项目")
         self.show_status(f"✓ 已刷新，共 {len(files)} 个项目")
+
+    def _refresh_cloud_list(self):
+        """刷新云端文件列表"""
+        if not self.github_sync.connected:
+            self.show_error("请先配置并连接GitHub")
+            return
+
+        success, file_list, msg = self.github_sync.get_file_list(self.cloud_current_path)
+        if not success:
+            self.show_error(f"获取云端文件列表失败：{msg}")
+            return
+
+        self.cloud_files_cache = file_list
+
+        folders = sorted([f for f in file_list if f['is_folder']], key=lambda x: x['name'].lower())
+        files = sorted([f for f in file_list if not f['is_folder']], key=lambda x: x['name'].lower())
+
+        for f in folders:
+            self.file_tree.insert('', tk.END, iid=f"cloud_{f['path']}", values=(
+                "📁", f['name'], "<DIR>", "-", "文件夹", "云端", "-"
+            ), tags=('folder',))
+
+        for f in files:
+            size = f['size']
+            if size < 1024:
+                size_str = f"{size} B"
+            elif size < 1024 * 1024:
+                size_str = f"{size / 1024:.1f} KB"
+            else:
+                size_str = f"{size / (1024*1024):.1f} MB"
+
+            _, ext = os.path.splitext(f['name'])
+            self.file_tree.insert('', tk.END, iid=f"cloud_{f['path']}", values=(
+                "📄", f['name'], ext or "文件", size_str, "其他", "云端", "-"
+            ), tags=('synced',))
+
+        total = len(folders) + len(files)
+        self.file_count_label.config(text=f"☁️ 共 {total} 个云端项目")
+        self.show_status(f"☁️ 云端文件已刷新，共 {total} 个项目")
     
     def preview_file(self, file_item: FileItem):
         """预览文件"""
@@ -1557,19 +1656,58 @@ class UIManager:
     
     def _on_file_select(self, event):
         """文件选择事件"""
-        file_item = self.get_selected_file()
-        if file_item:
-            self.selected_file_id = file_item.id
-            self.preview_file(file_item)
-    
+        if self.view_mode == 'cloud':
+            self._on_cloud_file_select()
+        else:
+            file_item = self.get_selected_file()
+            if file_item:
+                self.selected_file_id = file_item.id
+                self.preview_file(file_item)
+
+    def _on_cloud_file_select(self):
+        """云端文件选择事件"""
+        selection = self.file_tree.selection()
+        if not selection:
+            return
+        item_id = selection[0]
+        # 更新详情面板
+        for f in self.cloud_files_cache:
+            if f"cloud_{f['path']}" == item_id:
+                self.detail_labels['file_name'].config(text=f['name'])
+                self.detail_labels['file_type'].config(text="文件夹" if f['is_folder'] else f.get('name', '').split('.')[-1])
+                size = f['size']
+                if f['is_folder']:
+                    size_str = "-"
+                elif size < 1024:
+                    size_str = f"{size} B"
+                elif size < 1024 * 1024:
+                    size_str = f"{size / 1024:.1f} KB"
+                else:
+                    size_str = f"{size / (1024*1024):.1f} MB"
+                self.detail_labels['file_size'].config(text=size_str)
+                self.detail_labels['update_time'].config(text="-")
+                self.detail_labels['sync_status'].config(text="云端")
+                # 预览
+                self.preview_text.config(state=tk.NORMAL)
+                self.preview_text.delete('1.0', tk.END)
+                if f['is_folder']:
+                    self.preview_text.insert('1.0', f"📁 云端文件夹：{f['name']}\n\n双击可进入文件夹。")
+                else:
+                    self.preview_text.insert('1.0', f"📄 云端文件：{f['name']}\n\n点击\"下载到本地\"可保存到本地。")
+                self.preview_text.config(state=tk.DISABLED)
+                break
+
     def _on_file_double_click(self, event):
         """文件双击事件"""
-        file_item = self.get_selected_file()
-        if file_item:
-            if file_item.is_folder:
-                self._enter_folder()
-            else:
-                self._on_open_file()
+        if self.view_mode == 'cloud':
+            self._enter_folder()
+        else:
+            file_item = self.get_selected_file()
+            if file_item:
+                if file_item.is_folder:
+                    self._enter_folder()
+                else:
+                    self._on_open_file()
     
     def _setup_drag_drop(self):
         """设置拖拽功能"""
@@ -1671,34 +1809,50 @@ class UIManager:
             selection = self.file_tree.selection()
             if item not in selection:
                 self.file_tree.selection_set(item)
-            
+
             context_menu = tk.Menu(self.root, tearoff=0, font=('微软雅黑', 9))
-            
-            selected_files = self.get_selected_files()
-            if len(selected_files) > 1:
-                context_menu.add_command(label=f"📥 下载选中的 {len(selected_files)} 个项目", 
-                                        command=self._download_selected)
-                context_menu.add_command(label=f"🗑️ 删除选中的 {len(selected_files)} 个项目", 
-                                        command=self._delete_selected)
+
+            if self.view_mode == 'cloud':
+                # 云端模式右键菜单
+                cloud_selections = self._get_cloud_selection_paths()
+                if len(cloud_selections) > 1:
+                    context_menu.add_command(label=f"📥 下载选中的 {len(cloud_selections)} 个项目",
+                                            command=self._cloud_download)
+                    context_menu.add_command(label=f"🗑 从云端删除 {len(cloud_selections)} 个项目",
+                                            command=self._cloud_delete)
+                else:
+                    context_menu.add_command(label="📥 下载到本地", command=self._cloud_download)
+                    context_menu.add_command(label="🗑 从云端删除", command=self._cloud_delete)
+                context_menu.add_separator()
+                context_menu.add_command(label="📂 返回本地视图", command=self._switch_to_local)
+                context_menu.add_command(label="🔄 刷新", command=self.refresh_list)
             else:
-                file_item = self.get_selected_file()
-                if file_item:
-                    if file_item.is_folder:
-                        context_menu.add_command(label="📁 进入文件夹", command=self._enter_folder)
-                    else:
-                        context_menu.add_command(label="📥 下载", command=self._on_download)
-                        context_menu.add_command(label="📂 打开", command=self._on_open_file)
-                    context_menu.add_separator()
-                    context_menu.add_command(label="✏️ 重命名", command=self._on_rename)
-                    context_menu.add_command(label="🗑️ 删除", command=self._on_delete)
-            
-            context_menu.add_separator()
-            context_menu.add_command(label="📤 上传文件", command=self._on_upload_file)
-            context_menu.add_command(label="📁 上传文件夹", command=self._on_upload_folder)
-            context_menu.add_command(label="➕ 新建文件夹", command=self._on_new_folder)
-            context_menu.add_separator()
-            context_menu.add_command(label="🔄 刷新", command=self.refresh_list)
-            
+                # 本地模式右键菜单
+                selected_files = self.get_selected_files()
+                if len(selected_files) > 1:
+                    context_menu.add_command(label=f"📥 下载选中的 {len(selected_files)} 个本地项目",
+                                            command=self._download_selected)
+                    context_menu.add_command(label=f"🗑️ 删除选中的 {len(selected_files)} 个项目",
+                                            command=self._delete_selected)
+                else:
+                    file_item = self.get_selected_file()
+                    if file_item:
+                        if file_item.is_folder:
+                            context_menu.add_command(label="📁 进入文件夹", command=self._enter_folder)
+                        else:
+                            context_menu.add_command(label="📥 下载", command=self._on_download)
+                            context_menu.add_command(label="📂 打开", command=self._on_open_file)
+                        context_menu.add_separator()
+                        context_menu.add_command(label="✏️ 重命名", command=self._on_rename)
+                        context_menu.add_command(label="🗑️ 删除", command=self._on_delete)
+
+                context_menu.add_separator()
+                context_menu.add_command(label="📤 上传文件", command=self._on_upload_file)
+                context_menu.add_command(label="📁 上传文件夹", command=self._on_upload_folder)
+                context_menu.add_command(label="➕ 新建文件夹", command=self._on_new_folder)
+                context_menu.add_separator()
+                context_menu.add_command(label="🔄 刷新", command=self.refresh_list)
+
             context_menu.post(event.x_root, event.y_root)
     
     def _select_all(self, event):
@@ -2272,249 +2426,160 @@ class UIManager:
         threading.Thread(target=pull_task, daemon=True).start()
 
     def _manage_github_files(self):
-        """管理GitHub云端文件（浏览和删除）"""
+        """切换到云端文件视图"""
         if not self.github_sync.connected:
             self.show_error("请先配置并连接GitHub")
             return
 
-        dialog = tk.Toplevel(self.root)
-        dialog.title("云端文件管理")
-        dialog.geometry("700x500")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.configure(bg='#ffffff')
+        self._switch_to_cloud()
 
-        # 标题
-        tk.Label(dialog, text="☁️ 云端文件管理",
-                font=('Microsoft YaHei', 14, 'bold'), bg='#ffffff', fg='#2c3e50').pack(pady=10)
+    def _switch_to_cloud(self):
+        """切换到云端视图"""
+        self.view_mode = 'cloud'
+        self.cloud_current_path = ""
+        self.cloud_folder_history = []
+        self.list_header_label.config(text="☁️ 云端文件")
 
-        # 路径和返回按钮
-        nav_frame = tk.Frame(dialog, bg='#ffffff')
-        nav_frame.pack(fill=tk.X, padx=15, pady=(0, 5))
+        # 切换按钮显示
+        for btn in self._local_buttons:
+            btn.pack_forget()
+        for btn in self._cloud_buttons:
+            btn.pack(side=tk.LEFT, padx=3, pady=5)
 
-        cloud_path_var = tk.StringVar(value="/")
-        tk.Label(nav_frame, textvariable=cloud_path_var,
-                font=('Microsoft YaHei', 10), bg='#ffffff', fg='#2c3e50').pack(side=tk.LEFT)
+        self._update_path_display()
+        self.refresh_list()
 
-        cloud_folder_history = []
+    def _switch_to_local(self):
+        """切换回本地视图"""
+        self.view_mode = 'local'
+        self.list_header_label.config(text="📋 本地文件")
 
-        # 文件列表
-        list_frame = tk.Frame(dialog, bg='#ffffff')
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
+        # 切换按钮显示
+        for btn in self._cloud_buttons:
+            btn.pack_forget()
+        for btn in self._local_buttons:
+            btn.pack(side=tk.LEFT, padx=3, pady=5)
 
-        columns = ('name', 'type', 'size')
-        cloud_tree = ttk.Treeview(list_frame, columns=columns, show='headings',
-                                  selectmode='extended')
-        cloud_tree.heading('name', text='名称')
-        cloud_tree.heading('type', text='类型')
-        cloud_tree.heading('size', text='大小')
-        cloud_tree.column('name', width=350)
-        cloud_tree.column('type', width=100, anchor='center')
-        cloud_tree.column('size', width=120, anchor='center')
+        self._update_path_display()
+        self.refresh_list()
 
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=cloud_tree.yview)
-        cloud_tree.configure(yscrollcommand=scrollbar.set)
-        cloud_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    def _get_cloud_selection_paths(self):
+        """获取当前选中的云端文件路径列表"""
+        selections = self.file_tree.selection()
+        paths = []
+        for item_id in selections:
+            if item_id.startswith("cloud_"):
+                paths.append(item_id[6:])  # 去掉 "cloud_" 前缀
+        return paths
 
-        def get_current_path():
-            path = cloud_path_var.get()
-            return "" if path == "/" else path.lstrip("/")
+    def _cloud_delete(self):
+        """从云端删除选中文件"""
+        paths = self._get_cloud_selection_paths()
+        if not paths:
+            self.show_error("请先选择要删除的文件")
+            return
 
-        def refresh_cloud_list():
-            for item in cloud_tree.get_children():
-                cloud_tree.delete(item)
+        files_to_delete = []
+        folders_to_delete = []
+        for path in paths:
+            is_folder = False
+            for f in self.cloud_files_cache:
+                if f['path'] == path and f['is_folder']:
+                    is_folder = True
+                    break
+            if is_folder:
+                folders_to_delete.append(path)
+            else:
+                files_to_delete.append(path)
 
-            current_path = get_current_path()
-            success, file_list, msg = self.github_sync.get_file_list(current_path)
-            if not success:
-                self.show_error(f"获取文件列表失败：{msg}")
-                return
+        parts = []
+        if files_to_delete:
+            parts.append(f"{len(files_to_delete)} 个文件")
+        if folders_to_delete:
+            parts.append(f"{len(folders_to_delete)} 个文件夹")
+        warning = ""
+        if folders_to_delete:
+            warning = "\n\n注意：删除文件夹会删除其中所有内容！"
 
-            folders = sorted([f for f in file_list if f['is_folder']], key=lambda x: x['name'].lower())
-            files = sorted([f for f in file_list if not f['is_folder']], key=lambda x: x['name'].lower())
+        if not messagebox.askyesno("确认删除",
+                                   f"确定要从 GitHub 删除 {' 和 '.join(parts)} 吗？{warning}\n\n此操作不可恢复！"):
+            return
 
-            for f in folders:
-                cloud_tree.insert('', tk.END, iid=f['path'], values=(
-                    f"📁 {f['name']}", "文件夹", "-"
-                ))
+        success_count = 0
+        fail_count = 0
+        errors = []
 
-            for f in files:
-                size = f['size']
-                if size < 1024:
-                    size_str = f"{size} B"
-                elif size < 1024 * 1024:
-                    size_str = f"{size / 1024:.1f} KB"
-                else:
-                    size_str = f"{size / (1024*1024):.1f} MB"
-
-                _, ext = os.path.splitext(f['name'])
-                cloud_tree.insert('', tk.END, iid=f['path'], values=(
-                    f"📄 {f['name']}", ext or "文件", size_str
-                ))
-
-        def go_back():
-            if cloud_folder_history:
-                prev_path = cloud_folder_history.pop()
-                cloud_path_var.set(prev_path if prev_path else "/")
-                refresh_cloud_list()
-
-        def enter_cloud_folder(event=None):
-            selection = cloud_tree.selection()
-            if not selection:
-                return
-            item_path = selection[0]
-            current_path = get_current_path()
-            success, file_list, _ = self.github_sync.get_file_list(current_path)
+        for path in files_to_delete + folders_to_delete:
+            success, msg = self.github_sync.delete_file(path)
             if success:
-                for f in file_list:
-                    if f['path'] == item_path and f['is_folder']:
-                        cloud_folder_history.append(get_current_path())
-                        cloud_path_var.set("/" + item_path if not item_path.startswith("/") else item_path)
-                        refresh_cloud_list()
-                        return
-
-        def delete_cloud_files():
-            selections = cloud_tree.selection()
-            if not selections:
-                self.show_error("请先选择要删除的文件")
-                return
-
-            files_to_delete = []
-            folders_to_delete = []
-            for item_path in selections:
-                values = cloud_tree.item(item_path, 'values')
-                if values and values[1] == "文件夹":
-                    folders_to_delete.append(item_path)
-                else:
-                    files_to_delete.append(item_path)
-
-            parts = []
-            if files_to_delete:
-                parts.append(f"{len(files_to_delete)} 个文件")
-            if folders_to_delete:
-                parts.append(f"{len(folders_to_delete)} 个文件夹")
-            warning = ""
-            if folders_to_delete:
-                warning = "\n\n注意：删除文件夹会删除其中所有内容！"
-
-            if not messagebox.askyesno("确认删除",
-                                       f"确定要从 GitHub 删除 {' 和 '.join(parts)} 吗？{warning}\n\n此操作不可恢复！"):
-                return
-
-            success_count = 0
-            fail_count = 0
-            errors = []
-
-            for item_path in files_to_delete + folders_to_delete:
-                success, msg = self.github_sync.delete_file(item_path)
-                if success:
-                    success_count += 1
-                else:
-                    fail_count += 1
-                    errors.append(f"{os.path.basename(item_path)}: {msg}")
-
-            refresh_cloud_list()
-
-            if fail_count == 0:
-                self.show_success(f"成功删除 {success_count} 个项目")
+                success_count += 1
             else:
-                detail = "\n".join(errors[:5])
-                if len(errors) > 5:
-                    detail += f"\n...等共 {len(errors)} 个错误"
-                self.show_error(f"删除完成：成功 {success_count}，失败 {fail_count}\n{detail}")
+                fail_count += 1
+                errors.append(f"{os.path.basename(path)}: {msg}")
 
-        def download_cloud_files():
-            selections = cloud_tree.selection()
-            if not selections:
-                self.show_error("请先选择要下载的文件或文件夹")
-                return
+        self.refresh_list()
 
-            dest_dir = filedialog.askdirectory(title="选择保存位置")
-            if not dest_dir:
-                return
+        if fail_count == 0:
+            self.show_success(f"成功删除 {success_count} 个项目")
+        else:
+            detail = "\n".join(errors[:5])
+            if len(errors) > 5:
+                detail += f"\n...等共 {len(errors)} 个错误"
+            self.show_error(f"删除完成：成功 {success_count}，失败 {fail_count}\n{detail}")
 
-            files_to_download = []
-            folders_to_download = []
-            for item_path in selections:
-                values = cloud_tree.item(item_path, 'values')
-                if values and values[1] == "文件夹":
-                    folders_to_download.append(item_path)
-                else:
-                    files_to_download.append(item_path)
+    def _cloud_download(self):
+        """下载选中的云端文件到本地"""
+        paths = self._get_cloud_selection_paths()
+        if not paths:
+            self.show_error("请先选择要下载的文件或文件夹")
+            return
 
-            success_count = 0
-            fail_count = 0
-            errors = []
+        dest_dir = filedialog.askdirectory(title="选择保存位置")
+        if not dest_dir:
+            return
 
-            for github_path in files_to_download:
-                file_name = os.path.basename(github_path)
-                local_path = os.path.join(dest_dir, file_name)
-                success, msg = self.github_sync.pull_file(github_path, local_path)
-                if success:
-                    success_count += 1
-                else:
-                    fail_count += 1
-                    errors.append(f"{file_name}: {msg}")
-
-            for github_path in folders_to_download:
-                folder_name = os.path.basename(github_path)
-                local_path = os.path.join(dest_dir, folder_name)
-                s, f, errs = self.github_sync.pull_folder(github_path, local_path)
-                success_count += s
-                fail_count += f
-                errors.extend(errs)
-
-            if fail_count == 0:
-                self.show_success(f"成功下载 {success_count} 个项目到：{dest_dir}")
+        files_to_download = []
+        folders_to_download = []
+        for path in paths:
+            is_folder = False
+            for f in self.cloud_files_cache:
+                if f['path'] == path and f['is_folder']:
+                    is_folder = True
+                    break
+            if is_folder:
+                folders_to_download.append(path)
             else:
-                detail = "\n".join(errors[:5])
-                if len(errors) > 5:
-                    detail += f"\n...等共 {len(errors)} 个错误"
-                self.show_error(f"下载完成：成功 {success_count}，失败 {fail_count}\n{detail}")
+                files_to_download.append(path)
 
-        cloud_tree.bind('<Double-1>', enter_cloud_folder)
+        success_count = 0
+        fail_count = 0
+        errors = []
 
-        # 右键菜单
-        def show_cloud_context_menu(event):
-            item = cloud_tree.identify_row(event.y)
-            if item:
-                if item not in cloud_tree.selection():
-                    cloud_tree.selection_set(item)
+        for github_path in files_to_download:
+            file_name = os.path.basename(github_path)
+            local_path = os.path.join(dest_dir, file_name)
+            success, msg = self.github_sync.pull_file(github_path, local_path)
+            if success:
+                success_count += 1
+            else:
+                fail_count += 1
+                errors.append(f"{file_name}: {msg}")
 
-                menu = tk.Menu(dialog, tearoff=0, font=('微软雅黑', 9))
-                menu.add_command(label="📥 下载选中", command=download_cloud_files)
-                menu.add_command(label="🗑 删除选中", command=delete_cloud_files)
-                menu.add_separator()
-                menu.add_command(label="🔄 刷新", command=refresh_cloud_list)
-                menu.post(event.x_root, event.y_root)
+        for github_path in folders_to_download:
+            folder_name = os.path.basename(github_path)
+            local_path = os.path.join(dest_dir, folder_name)
+            s, f, errs = self.github_sync.pull_folder(github_path, local_path)
+            success_count += s
+            fail_count += f
+            errors.extend(errs)
 
-        cloud_tree.bind('<Button-3>', show_cloud_context_menu)
-
-        # 返回按钮
-        tk.Button(nav_frame, text="⬆ 返回", font=('Microsoft YaHei', 9),
-                 command=go_back, bg='#95a5a6', fg='white',
-                 relief=tk.FLAT, padx=8, pady=2, cursor='hand2').pack(side=tk.RIGHT)
-
-        # 底部按钮（先打包，防止被 Treeview 挤出）
-        btn_frame = tk.Frame(dialog, bg='#ffffff')
-        btn_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=15, pady=10)
-
-        tk.Button(btn_frame, text="📥 下载选中", font=('Microsoft YaHei', 10),
-                 command=download_cloud_files, bg='#27ae60', fg='white',
-                 relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_frame, text="🗑 删除选中", font=('Microsoft YaHei', 10),
-                 command=delete_cloud_files, bg='#e74c3c', fg='white',
-                 relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_frame, text="🔄 刷新", font=('Microsoft YaHei', 10),
-                 command=refresh_cloud_list, bg='#3498db', fg='white',
-                 relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_frame, text="关闭", font=('Microsoft YaHei', 10),
-                 command=dialog.destroy, bg='#95a5a6', fg='white',
-                 relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.RIGHT, padx=3)
-
-        # 初始加载
-        refresh_cloud_list()
+        if fail_count == 0:
+            self.show_success(f"成功下载 {success_count} 个项目到：{dest_dir}")
+        else:
+            detail = "\n".join(errors[:5])
+            if len(errors) > 5:
+                detail += f"\n...等共 {len(errors)} 个错误"
+            self.show_error(f"下载完成：成功 {success_count}，失败 {fail_count}\n{detail}")
 
 
 class FileManagerApp:
