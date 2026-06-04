@@ -1411,8 +1411,8 @@ class UIManager:
                  command=self._on_open_file, bg='#3498db', fg='white',
                  relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
         
-        tk.Button(action_frame, text="📁 进入", font=('微软雅黑', 10),
-                 command=self._enter_folder, bg='#9b59b6', fg='white',
+        tk.Button(action_frame, text="🗑️ 删除", font=('微软雅黑', 10),
+                 command=self._on_delete, bg='#e74c3c', fg='white',
                  relief=tk.FLAT, padx=12, pady=5, cursor='hand2').pack(side=tk.LEFT, padx=3)
     
     def _create_status_bar(self):
@@ -2052,8 +2052,12 @@ class UIManager:
     
     def _on_download(self):
         """下载/导出文件或文件夹"""
+        if self.view_mode == 'cloud':
+            self._cloud_download()
+            return
+
         selected_files = self.get_selected_files()
-        
+
         if not selected_files:
             self.show_error("请先选择要下载的项目")
             return
@@ -2097,6 +2101,10 @@ class UIManager:
     
     def _on_open_file(self):
         """打开文件"""
+        if self.view_mode == 'cloud':
+            self._cloud_open_file()
+            return
+
         file_item = self.get_selected_file()
         if not file_item:
             self.show_error("请先选择要打开的文件")
@@ -2169,6 +2177,10 @@ class UIManager:
     
     def _on_delete(self):
         """删除文件或文件夹"""
+        if self.view_mode == 'cloud':
+            self._cloud_delete()
+            return
+
         file_item = self.get_selected_file()
         if not file_item:
             self.show_error("请先选择要删除的项目")
@@ -2580,6 +2592,38 @@ class UIManager:
             if len(errors) > 5:
                 detail += f"\n...等共 {len(errors)} 个错误"
             self.show_error(f"下载完成：成功 {success_count}，失败 {fail_count}\n{detail}")
+
+    def _cloud_open_file(self):
+        """下载云端文件到临时目录并用系统程序打开"""
+        paths = self._get_cloud_selection_paths()
+        if not paths:
+            self.show_error("请先选择要打开的文件")
+            return
+
+        # 只处理单个文件
+        github_path = paths[0]
+        file_name = os.path.basename(github_path)
+
+        # 检查是否为文件夹
+        for f in self.cloud_files_cache:
+            if f['path'] == github_path and f['is_folder']:
+                self.show_error("文件夹无法直接打开，请使用下载功能")
+                return
+
+        # 下载到临时目录
+        temp_dir = os.path.join(self.file_store.config_dir, "temp_open")
+        os.makedirs(temp_dir, exist_ok=True)
+        local_path = os.path.join(temp_dir, file_name)
+
+        success, msg = self.github_sync.pull_file(github_path, local_path)
+        if success:
+            try:
+                os.startfile(local_path)
+                self.show_status(f"已打开：{file_name}")
+            except Exception as e:
+                self.show_error(f"无法打开文件：{e}")
+        else:
+            self.show_error(f"下载失败：{msg}")
 
 
 class FileManagerApp:
