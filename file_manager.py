@@ -1638,6 +1638,11 @@ class UIManager:
 
         self.cloud_files_cache = file_list
 
+        # 按搜索关键词过滤
+        keyword = self.search_var.get().strip().lower()
+        if keyword:
+            file_list = [f for f in file_list if keyword in f['name'].lower()]
+
         folders = sorted([f for f in file_list if f['is_folder']], key=lambda x: x['name'].lower())
         files = sorted([f for f in file_list if not f['is_folder']], key=lambda x: x['name'].lower())
 
