@@ -1343,9 +1343,8 @@ class UIManager:
             ("⚙️ 配置GitHub", self._show_github_config),
             ("⬆️ 推送到云端", self._push_to_github),
             ("⬇️ 拉取到本地", self._pull_from_github),
-            ("☁️ 管理云端文件", self._manage_github_files),
         ]
-        
+
         for text, command in github_buttons:
             btn = tk.Button(sidebar_frame, text=text, font=('微软雅黑', 10),
                           command=command, bg='#ffffff', fg='#2c3e50',
@@ -1354,6 +1353,14 @@ class UIManager:
             btn.pack(fill=tk.X, padx=5, pady=1)
             btn.bind('<Enter>', lambda e, b=btn: b.configure(bg='#ecf0f1'))
             btn.bind('<Leave>', lambda e, b=btn: b.configure(bg='#ffffff'))
+
+        self._toggle_cloud_btn = tk.Button(sidebar_frame, text="☁️ 管理云端文件",
+                                           font=('微软雅黑', 10), command=self._toggle_cloud_view,
+                                           bg='#ffffff', fg='#2c3e50', relief=tk.FLAT,
+                                           anchor='w', padx=15, pady=8, cursor='hand2')
+        self._toggle_cloud_btn.pack(fill=tk.X, padx=5, pady=1)
+        self._toggle_cloud_btn.bind('<Enter>', lambda e: self._toggle_cloud_btn.configure(bg='#ecf0f1'))
+        self._toggle_cloud_btn.bind('<Leave>', lambda e: self._toggle_cloud_btn.configure(bg='#ffffff'))
         
         self.sync_status_label = tk.Label(sidebar_frame, text="● 未连接",
                                          font=('微软雅黑', 9), fg='#95a5a6',
@@ -2546,12 +2553,20 @@ class UIManager:
 
         self._switch_to_cloud()
 
+    def _toggle_cloud_view(self):
+        """切换云端/本地视图"""
+        if self.view_mode == 'local':
+            self._manage_github_files()
+        else:
+            self._switch_to_local()
+
     def _switch_to_cloud(self):
         """切换到云端视图"""
         self.view_mode = 'cloud'
         self.cloud_current_path = ""
         self.cloud_folder_history = []
         self.list_header_label.config(text="☁️ 云端文件")
+        self._toggle_cloud_btn.config(text="📋 管理本地文件")
 
         # 切换按钮显示
         for btn in self._local_buttons:
@@ -2566,6 +2581,7 @@ class UIManager:
         """切换回本地视图"""
         self.view_mode = 'local'
         self.list_header_label.config(text="📋 本地文件")
+        self._toggle_cloud_btn.config(text="☁️ 管理云端文件")
 
         # 切换按钮显示
         for btn in self._cloud_buttons:
