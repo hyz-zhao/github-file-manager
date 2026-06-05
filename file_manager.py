@@ -361,9 +361,11 @@ class GitHubSync:
         """
         if not self.connected:
             return False, "未连接到GitHub，请先配置连接"
-        
+
         try:
             file_content = self.repo.get_contents(github_path, ref=self.branch)
+            if isinstance(file_content, list):
+                return False, "这是一个文件夹，请使用删除文件夹功能"
             self.repo.delete_file(
                 path=github_path,
                 message=f"删除文件: {os.path.basename(github_path)}",
@@ -371,11 +373,64 @@ class GitHubSync:
                 branch=self.branch
             )
             return True, "文件删除成功"
-            
+
         except Exception as e:
             error_msg = str(e)
             if "404" in error_msg:
                 return False, f"文件 '{github_path}' 不存在"
+            else:
+                return False, f"删除失败：{error_msg}"
+
+    def delete_folder(self, github_path: str) -> Tuple[bool, str]:
+        """
+        递归删除GitHub仓库中的文件夹
+        参数：github_path - GitHub仓库中的文件夹路径
+        返回：(是否成功, 错误信息)
+        """
+        if not self.connected:
+            return False, "未连接到GitHub，请先配置连接"
+
+        try:
+            contents = self.repo.get_contents(github_path, ref=self.branch)
+            if not isinstance(contents, list):
+                # 实际是文件而不是文件夹
+                self.repo.delete_file(
+                    path=github_path,
+                    message=f"删除文件: {os.path.basename(github_path)}",
+                    sha=contents.sha,
+                    branch=self.branch
+                )
+                return True, "文件删除成功"
+
+            deleted_count = 0
+            errors = []
+            for item in contents:
+                if item.type == "dir":
+                    success, msg = self.delete_folder(item.path)
+                    if success:
+                        deleted_count += 1
+                    else:
+                        errors.append(f"{item.name}: {msg}")
+                else:
+                    try:
+                        self.repo.delete_file(
+                            path=item.path,
+                            message=f"删除文件: {item.name}",
+                            sha=item.sha,
+                            branch=self.branch
+                        )
+                        deleted_count += 1
+                    except Exception as e:
+                        errors.append(f"{item.name}: {str(e)}")
+
+            if errors:
+                return False, f"部分删除失败：{'; '.join(errors[:3])}"
+            return True, f"文件夹删除成功，共删除 {deleted_count} 个文件"
+
+        except Exception as e:
+            error_msg = str(e)
+            if "404" in error_msg:
+                return False, f"文件夹 '{github_path}' 不存在"
             else:
                 return False, f"删除失败：{error_msg}"
     
@@ -1485,28 +1540,38 @@ class UIManager:
 
     def _enter_folder(self):
         """进入选中的文件夹"""
-        file_item = self.get_selected_file()
-        if not file_item:
-            self.show_error("请先选择一个文件夹")
-            return
-
-        if not file_item.is_folder:
-            self.show_error("选中的不是文件夹")
-            return
-
         if self.view_mode == 'cloud':
-            # 从缓存中找到对应的云端路径
+            # 云端模式：直接从 tree 选中项和 cloud_files_cache 查找
+            selection = self.file_tree.selection()
+            if not selection:
+                self.show_error("请先选择一个文件夹")
+                return
+            item_id = selection[0]
             cloud_path = None
+            is_folder = False
             for f in self.cloud_files_cache:
-                if f['name'] == file_item.file_name and f['is_folder']:
+                if f"cloud_{f['path']}" == item_id:
                     cloud_path = f['path']
+                    is_folder = f['is_folder']
                     break
-            if cloud_path:
-                self.cloud_folder_history.append(self.cloud_current_path)
-                self.cloud_current_path = cloud_path
-                self._update_path_display()
-                self.refresh_list()
+            if not cloud_path:
+                self.show_error("请先选择一个文件夹")
+                return
+            if not is_folder:
+                self.show_error("选中的不是文件夹")
+                return
+            self.cloud_folder_history.append(self.cloud_current_path)
+            self.cloud_current_path = cloud_path
+            self._update_path_display()
+            self.refresh_list()
         else:
+            file_item = self.get_selected_file()
+            if not file_item:
+                self.show_error("请先选择一个文件夹")
+                return
+            if not file_item.is_folder:
+                self.show_error("选中的不是文件夹")
+                return
             if self.current_folder:
                 self.folder_history.append(self.current_folder)
                 self.current_folder = os.path.join(self.current_folder, file_item.file_name)
@@ -1700,7 +1765,18 @@ class UIManager:
     def _on_file_double_click(self, event):
         """文件双击事件"""
         if self.view_mode == 'cloud':
-            self._enter_folder()
+            # 云端模式：判断是文件夹还是文件
+            selection = self.file_tree.selection()
+            if not selection:
+                return
+            item_id = selection[0]
+            for f in self.cloud_files_cache:
+                if f"cloud_{f['path']}" == item_id:
+                    if f['is_folder']:
+                        self._enter_folder()
+                    else:
+                        self._cloud_open_file()
+                    return
         else:
             file_item = self.get_selected_file()
             if file_item:
@@ -2521,8 +2597,16 @@ class UIManager:
         fail_count = 0
         errors = []
 
-        for path in files_to_delete + folders_to_delete:
+        for path in files_to_delete:
             success, msg = self.github_sync.delete_file(path)
+            if success:
+                success_count += 1
+            else:
+                fail_count += 1
+                errors.append(f"{os.path.basename(path)}: {msg}")
+
+        for path in folders_to_delete:
+            success, msg = self.github_sync.delete_folder(path)
             if success:
                 success_count += 1
             else:
