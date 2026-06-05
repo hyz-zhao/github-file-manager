@@ -2262,24 +2262,44 @@ class UIManager:
             self._cloud_delete()
             return
 
-        file_item = self.get_selected_file()
-        if not file_item:
+        selected_files = self.get_selected_files()
+        if not selected_files:
             self.show_error("请先选择要删除的项目")
             return
-        
-        item_type = "文件夹" if file_item.is_folder else "文件"
-        warning = ""
-        if file_item.is_folder:
-            warning = "\n\n注意：文件夹内所有内容都将被删除！"
-        
-        if messagebox.askyesno("确认删除", 
-                              f"确定要删除{item_type} '{file_item.file_name}' 吗？{warning}\n\n此操作不可恢复！"):
+
+        if len(selected_files) == 1:
+            file_item = selected_files[0]
+            item_type = "文件夹" if file_item.is_folder else "文件"
+            warning = ""
+            if file_item.is_folder:
+                warning = "\n\n注意：文件夹内所有内容都将被删除！"
+            if not messagebox.askyesno("确认删除",
+                                       f"确定要删除{item_type} '{file_item.file_name}' 吗？{warning}\n\n此操作不可恢复！"):
+                return
+        else:
+            folder_count = sum(1 for f in selected_files if f.is_folder)
+            file_count = len(selected_files) - folder_count
+            warning = ""
+            if folder_count > 0:
+                warning = f"\n\n注意：包含 {folder_count} 个文件夹，所有内容都将被删除！"
+            if not messagebox.askyesno("确认删除",
+                                       f"确定要删除选中的 {file_count} 个文件和 {folder_count} 个文件夹吗？{warning}\n\n此操作不可恢复！"):
+                return
+
+        success_count = 0
+        fail_count = 0
+        for file_item in selected_files:
             success, msg = self.file_store.delete_file(file_item.id)
             if success:
-                self.refresh_list()
-                self.show_success(msg)
+                success_count += 1
             else:
-                self.show_error(msg)
+                fail_count += 1
+
+        self.refresh_list()
+        if success_count > 0:
+            self.show_success(f"成功删除 {success_count} 个项目")
+        if fail_count > 0:
+            self.show_error(f"{fail_count} 个项目删除失败")
     
     def _show_github_config(self):
         """显示GitHub配置对话框"""
