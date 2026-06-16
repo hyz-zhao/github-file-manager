@@ -1506,6 +1506,126 @@ class UIManager:
         self.root.bind('<F5>', lambda e: self.refresh_list())
 
         self._setup_drag_drop()
+
+    def _show_progress_dialog(self, title: str, task_fn):
+        """显示带有进度条和取消按钮的操作对话框。
+
+        Parameters
+        ----------
+        title : str
+            对话框标题
+        task_fn : callable
+            无参可调用对象，内部通过 ``self._update_progress`` 更新进度、
+            ``self._set_progress_status`` 更新文字，完成后可通过 ``self._set_progress_complete`` 终止。
+        """
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("520x220")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.configure(bg='#ffffff')
+
+        tk.Label(dialog, text=title, font=('Microsoft YaHei', 14, 'bold'),
+                 bg='#ffffff', fg='#1e293b').pack(pady=(18, 6))
+
+        # 进度条
+        self._progress_var = tk.DoubleVar(value=0)
+        progress_bar = ttk.Progressbar(dialog, variable=self._progress_var,
+                                       maximum=100, mode='determinate')
+        progress_bar.pack(fill=tk.X, padx=30, pady=8)
+
+        # 状态文字
+        self._progress_status = tk.Label(dialog, text="准备中...",
+                                         font=('Microsoft YaHei', 10),
+                                         bg='#ffffff', fg='#64748b',
+                                         wraplength=460, justify=tk.CENTER)
+        self._progress_status.pack(pady=4)
+
+        # 百分比标签
+        self._progress_pct = tk.Label(dialog, text="0%",
+                                      font=('Microsoft YaHei', 11, 'bold'),
+                                      bg='#ffffff', fg='#6366f1')
+        self._progress_pct.pack(pady=2)
+
+        # 取消按钮
+        cancel_btn = tk.Button(dialog, text="取消", font=('Microsoft YaHei', 10),
+                               bg='#ef4444', fg='white', relief=tk.FLAT,
+                               padx=20, pady=5, cursor='hand2',
+                               command=lambda: self._set_progress_cancel())
+        cancel_btn.pack(pady=12)
+
+        # 居中（必须在所有 widget pack 之后计算尺寸）
+        dialog.update_idletasks()
+        wx = self.root.winfo_x()
+        wy = self.root.winfo_y()
+        dw, dh = dialog.winfo_width(), dialog.winfo_height()
+        dialog.geometry(f"+{wx + (self.root.winfo_width() - dw) // 2}+{wy + (self.root.winfo_height() - dh) // 2}")
+
+        dialog.grab_set()
+
+        self._progress_cancelled = False
+        self._progress_dialog = dialog
+
+        # 在新线程中运行任务
+        def task_wrapper():
+            task_fn()
+            try:
+                self.root.after(0, self._close_progress_dialog)
+            except RuntimeError:
+                self._close_progress_dialog()
+
+        threading.Thread(target=task_wrapper, daemon=True).start()
+
+    def _update_progress(self, pct: float, status: str):
+        """从后台线程调用以更新进度条和状态。"""
+        try:
+            self.root.after(0, lambda: self._do_update_progress(pct, status))
+        except RuntimeError:
+            # 测试环境或 mainloop 未运行时直接更新
+            self._do_update_progress(pct, status)
+
+    def _do_update_progress(self, pct: float, status: str):
+        if self._progress_cancelled:
+            return
+        pct = max(0.0, min(100.0, pct))
+        try:
+            self._progress_var.set(pct)
+            self._progress_status.config(text=status)
+            self._progress_pct.config(text=f"{pct:.0f}%")
+        except RuntimeError:
+            # 测试环境或 mainloop 未运行时直接赋值
+            self._progress_var.set(pct)
+            self._progress_status.config(text=status)
+            self._progress_pct.config(text=f"{pct:.0f}%")
+
+    def _set_progress_status(self, status: str):
+        self._update_progress(self._progress_var.get(), status)
+
+    def _set_progress_cancel(self):
+        self._progress_cancelled = True
+        try:
+            self._progress_status.config(text="正在取消...", fg='#94a3b8')
+        except RuntimeError:
+            pass
+
+    def _set_progress_complete(self):
+        self._progress_cancelled = True
+
+    def _close_progress_dialog(self):
+        if self._progress_cancelled:
+            try:
+                self._progress_var.set(100)
+                self._progress_status.config(text="已取消", fg='#94a3b8')
+                self._progress_pct.config(text="100%")
+            except RuntimeError:
+                self._progress_var.set(100)
+        try:
+            self.root.after(500, lambda: (self._progress_dialog.destroy(),
+                                           setattr(self, '_progress_dialog', None)))
+        except RuntimeError:
+            self._progress_dialog.destroy()
+            self._progress_dialog = None
+
     
     def _update_path_display(self):
         """更新路径显示"""
@@ -2403,42 +2523,73 @@ class UIManager:
         if not self.github_sync.connected:
             self.show_error("请先配置并连接GitHub")
             return
-        
+
         # 推送前先清理不存在的文件索引
         self.file_store.cleanup_nonexistent_files()
-        
-        files = list(self.file_store.files.values())
-        if not files:
+
+        all_files = list(self.file_store.files.values())
+        if not all_files:
             self.show_error("没有文件需要推送")
             return
-        
+
         def push_task():
-            self.root.after(0, lambda: self.show_status(" 正在获取GitHub文件列表..."))
+            self._update_progress(0, "正在获取云端文件列表...")
             success, github_files, msg = self.github_sync.get_file_list()
-            
+
             if not success:
                 self.root.after(0, lambda: self.show_error(f"获取云端文件列表失败：{msg}"))
                 return
-            
-            github_file_names = {f['name'] for f in github_files}
-            
-            # 调试信息：打印所有待推送的文件
-            logger.debug(f"推送调试 - 本地文件总数：{len(files)}")
-            logger.debug(f"推送调试 - GitHub根目录文件：{github_file_names}")
-            for i, f in enumerate(files):
-                logger.debug(f"  [{i}] {f.file_name} (类型: {'文件夹' if f.is_folder else '文件'}, 路径: {f.local_path})")
 
+            # 收集云端所有文件和文件夹的名称（用于判断是否需要推送）
+            github_file_names = {f['name'] for f in github_files}
+
+            # 需要推送的文件：未同步 OR 已同步但云端不存在（可能被手动删除了）
+            needs_push = []
+            for f in all_files:
+                if f.sync_status != "已同步":
+                    needs_push.append(f)
+                elif f.is_folder:
+                    # 文件夹也需要检查，如果文件夹在云端不存在也需要重新推送
+                    # 文件夹通过其包含的文件 github_path 推断
+                    needs_push.append(f)
+                elif f.github_path:
+                    # 检查云端是否存在同名文件
+                    # 兼容：github_path 可能是 "dir/file.txt"，但云端可能只有根目录文件
+                    found_in_cloud = False
+                    for gname in github_file_names:
+                        if gname == f.file_name:
+                            found_in_cloud = True
+                            break
+                    if not found_in_cloud:
+                        needs_push.append(f)
+
+            if not needs_push:
+                self._update_progress(100, "所有文件已同步，无需推送")
+                self._set_progress_complete()
+                self.root.after(0, lambda: self.show_info("所有文件已同步"))
+                return
+
+            # 将所有非"已同步"的文件重置为"未同步"，准备重新推送
+            for f in needs_push:
+                if f.sync_status == "已同步":
+                    f.sync_status = "未同步"
+
+            total_items = len(needs_push)
             success_count = 0
             update_count = 0
             fail_count = 0
             fail_details = []
 
-            for file_item in files:
+            for idx, file_item in enumerate(needs_push):
+                if self._progress_cancelled:
+                    break
+
                 is_update = file_item.file_name in github_file_names
+                pct = (idx / total_items) * 100
+                action = "更新" if is_update else "推送"
 
                 if file_item.is_folder:
-                    action = "更新" if is_update else "推送"
-                    self.root.after(0, lambda f=file_item, a=action: self.show_status(f"⏳ 正在{a}文件夹：{f.file_name}"))
+                    self._update_progress(pct, f"{action}文件夹 ({idx+1}/{total_items}): {file_item.file_name}")
                     logger.info(f"推送文件夹: {file_item.file_name}, 本地路径: {file_item.local_path}, GitHub路径: {file_item.github_path}")
                     s, f, errors = self.github_sync.push_folder(
                         file_item.local_path,
@@ -2452,8 +2603,7 @@ class UIManager:
                     if is_update:
                         update_count += s
                 else:
-                    action = "更新" if is_update else "推送"
-                    self.root.after(0, lambda f=file_item, a=action: self.show_status(f"⏳ 正在{a}：{f.file_name}"))
+                    self._update_progress(pct, f"{action}文件 ({idx+1}/{total_items}): {file_item.file_name}")
                     logger.info(f"推送文件: {file_item.file_name}, 本地路径: {file_item.local_path}, GitHub路径: {file_item.github_path}")
                     success, msg = self.github_sync.push_file(
                         file_item.local_path,
@@ -2470,80 +2620,95 @@ class UIManager:
                         fail_count += 1
                         fail_details.append(f"{file_item.file_name}: {msg}")
                         logger.error(f"推送失败: {file_item.file_name}, 错误: {msg}")
-            
-            logger.info(f"推送结果 - 成功: {success_count}, 更新: {update_count}, 失败: {fail_count}")
-            if fail_details:
-                logger.warning(f"推送失败详情: {fail_details}")
-            
-            self.file_store.save_files()
-            self.root.after(0, lambda: self.refresh_list())
-            self.root.after(0, lambda: self.show_status(
-                f"✓ 推送完成：成功 {success_count}（其中更新 {update_count}），失败 {fail_count}"
-            ))
 
-            if fail_count == 0:
-                self.root.after(0, lambda: self.show_success(
-                    f"成功推送 {success_count} 个文件（更新 {update_count} 个）"
-                ))
-            else:
-                self.root.after(0, lambda: self.show_error(
-                    f"推送完成：成功 {success_count}（更新 {update_count}），失败 {fail_count}"
-                ))
-        
-        threading.Thread(target=push_task, daemon=True).start()
+            if not self._progress_cancelled:
+                self.file_store.save_files()
+                self.root.after(0, lambda: self.refresh_list())
+                total_done = success_count
+                detail = f"成功 {total_done}（更新 {update_count}）"
+                if fail_count:
+                    detail += f"，失败 {fail_count}"
+                self._update_progress(100, f"推送完成：{detail}")
+                self._set_progress_complete()
+                self.root.after(0, lambda: self.show_status(f"✓ 推送完成：{detail}"))
+
+                if fail_count == 0:
+                    self.root.after(0, lambda: self.show_success(f"成功推送 {total_done} 个文件（更新 {update_count} 个）"))
+                else:
+                    self.root.after(0, lambda: self.show_error(f"推送完成：{detail}"))
+
+        self._show_progress_dialog("⬆️ 推送到云端", push_task)
+
+    def show_info(self, message: str):
+        """显示信息对话框"""
+        messagebox.showinfo("提示", message)
     
     def _pull_from_github(self):
         """从GitHub拉取文件"""
         if not self.github_sync.connected:
             self.show_error("请先配置并连接GitHub")
             return
-        
+
         def pull_task():
-            self.root.after(0, lambda: self.show_status("⏳ 正在获取GitHub文件列表..."))
+            self._update_progress(0, "正在获取云端文件列表...")
             success, file_list, msg = self.github_sync.get_file_list()
-            
+
             if not success:
                 self.root.after(0, lambda: self.show_error(msg))
                 return
-            
+
+            total_items = len(file_list)
+            if total_items == 0:
+                self._update_progress(100, "云端无文件可拉取")
+                self._set_progress_complete()
+                self.root.after(0, lambda: self.show_info("云端无文件"))
+                return
+
             pull_count = 0
             skip_count = 0
-            
-            for github_file in file_list:
+
+            for idx, github_file in enumerate(file_list):
+                if self._progress_cancelled:
+                    break
+
+                pct = (idx / total_items) * 100
                 local_path = os.path.join(
                     self.file_store.sync_dir,
                     github_file['name']
                 )
-                
+
                 if os.path.exists(local_path):
                     skip_count += 1
-                    self.root.after(0, lambda g=github_file: self.show_status(f"⏭️ 跳过已存在：{g['name']}"))
+                    self._update_progress(pct, f"跳过已存在 ({idx+1}/{total_items}): {github_file['name']}")
                     continue
-                
+
+                name = github_file['name']
                 if github_file.get('is_folder', False):
-                    self.root.after(0, lambda g=github_file: self.show_status(f"⏳ 正在拉取文件夹：{g['name']}"))
+                    self._update_progress(pct, f"拉取文件夹 ({idx+1}/{total_items}): {name}")
                     s, f, _ = self.github_sync.pull_folder(github_file['path'], local_path)
                     pull_count += s
                 else:
-                    self.root.after(0, lambda g=github_file: self.show_status(f"⏳ 正在拉取：{g['name']}"))
+                    self._update_progress(pct, f"拉取文件 ({idx+1}/{total_items}): {name}")
                     success, msg = self.github_sync.pull_file(
                         github_file['path'],
                         local_path
                     )
-                    
+
                     if success:
                         pull_count += 1
-            
-            self.file_store.scan_local_files()
-            self.root.after(0, lambda: self.refresh_list())
-            self.root.after(0, lambda: self.show_status(
-                f"✓ 拉取完成：成功 {pull_count}，跳过 {skip_count}"
-            ))
-            self.root.after(0, lambda: self.show_success(
-                f"成功拉取 {pull_count} 个文件，跳过 {skip_count} 个已存在文件"
-            ))
-        
-        threading.Thread(target=pull_task, daemon=True).start()
+
+            if not self._progress_cancelled:
+                self.file_store.scan_local_files()
+                self.root.after(0, lambda: self.refresh_list())
+                detail = f"成功拉取 {pull_count}"
+                if skip_count:
+                    detail += f"，跳过 {skip_count}"
+                self._update_progress(100, f"拉取完成：{detail}")
+                self._set_progress_complete()
+                self.root.after(0, lambda: self.show_status(f"✓ {detail}"))
+                self.root.after(0, lambda: self.show_success(f"成功拉取 {pull_count} 个文件，跳过 {skip_count} 个已存在文件"))
+
+        self._show_progress_dialog("⬇️ 从云端拉取", pull_task)
 
     def _manage_github_files(self):
         """切换到云端文件视图"""
