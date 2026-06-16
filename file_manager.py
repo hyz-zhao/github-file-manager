@@ -353,10 +353,11 @@ class GitHubSync:
             
         return success_count, fail_count, errors
     
-    def delete_file(self, github_path: str) -> Tuple[bool, str]:
+    def delete_file(self, github_path: str, save_record=None) -> Tuple[bool, str]:
         """
         删除GitHub仓库中的文件
         参数：github_path - GitHub仓库中的文件路径
+             save_record - 可选回调，删除前获取文件信息保存记录
         返回：(是否成功, 错误信息)
         """
         if not self.connected:
@@ -366,6 +367,24 @@ class GitHubSync:
             file_content = self.repo.get_contents(github_path, ref=self.branch)
             if isinstance(file_content, list):
                 return False, "这是一个文件夹，请使用删除文件夹功能"
+
+            # 如果有记录回调，先保存文件信息
+            record_info = None
+            if save_record:
+                file_content_decoded = file_content.decoded_content
+                is_base64 = len(file_content_decoded) > 10240 or not self._is_text_like(file_content_decoded)
+                record_info = {
+                    'path': github_path,
+                    'sha': file_content.sha,
+                    'content': file_content.content if is_base64 else file_content_decoded.decode('utf-8'),
+                    'is_base64': is_base64,
+                    'size': file_content.size,
+                    'name': file_content.name,
+                    'deleted_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'deleted_at_ts': time.time()
+                }
+                save_record(record_info)
+
             self.repo.delete_file(
                 path=github_path,
                 message=f"删除文件: {os.path.basename(github_path)}",
@@ -380,6 +399,57 @@ class GitHubSync:
                 return False, f"文件 '{github_path}' 不存在"
             else:
                 return False, f"删除失败：{error_msg}"
+
+    def _is_text_like(self, content: bytes) -> bool:
+        """判断字节内容是否为文本"""
+        try:
+            content.decode('utf-8')
+            return True
+        except UnicodeDecodeError:
+            return False
+
+    def restore_file(self, github_path: str, content: str, sha: str,
+                     message: str = None, is_base64: bool = False) -> Tuple[bool, str]:
+        """
+        从删除历史中恢复GitHub仓库中的文件
+        参数：github_path - GitHub仓库中的文件路径
+              content - 文件内容（文本或base64编码）
+              sha - 文件的原始SHA
+              message - 提交信息
+              is_base64 - 内容是否为base64编码
+        返回：(是否成功, 错误信息)
+        """
+        if not self.connected:
+            return False, "未连接到GitHub，请先配置连接"
+
+        if message is None:
+            message = f"恢复文件: {os.path.basename(github_path)}"
+
+        # 如果需要base64解码
+        if is_base64:
+            try:
+                content_bytes = base64.b64decode(content)
+                import base64 as b64mod
+                content = b64mod.b64encode(content_bytes).decode('ascii')
+            except Exception:
+                pass  # 已经是base64，直接使用
+
+        try:
+            self.repo.update_file(
+                path=github_path,
+                message=message,
+                content=content,
+                sha=sha,
+                branch=self.branch
+            )
+            return True, "文件恢复成功"
+
+        except Exception as e:
+            error_msg = str(e)
+            if "404" in error_msg:
+                return False, f"恢复失败：文件路径不存在或SHA已失效"
+            else:
+                return False, f"恢复失败：{error_msg}"
 
     def delete_folder(self, github_path: str) -> Tuple[bool, str]:
         """
@@ -492,10 +562,13 @@ class FileStore:
         self.config_path = os.path.join(config_dir, "config.json")
         self.files_path = os.path.join(config_dir, "files.json")
         self.sync_dir = os.path.join(config_dir, "sync_files")
-        
+
         self.files: Dict[str, FileItem] = {}
-        self.deleted_items: List[dict] = []  # 删除历史：[{file_data, deleted_at}]
+        self.deleted_items: List[dict] = []  # 本地删除历史：[{file_data, deleted_at}]
+        self.cloud_deleted_items: List[dict] = []  # 云端删除历史：[{file_info, deleted_at}]
         self.MAX_DELETE_HISTORY = 20  # 最多保留20条删除记录
+        self.MAX_CLOUD_DELETE_HISTORY = 20  # 最多保留20条云端删除记录
+        self.github_sync: Optional['GitHubSync'] = None  # GitHubSync 引用（用于云端恢复）
         self.github_config = {
             'token': '',
             'repo_name': '',
@@ -666,6 +739,82 @@ class FileStore:
         ]
         # 保留最新 N 条
         self.deleted_items = self.deleted_items[-self.MAX_DELETE_HISTORY:]
+
+    def save_cloud_delete_history(self) -> bool:
+        """保存云端删除历史"""
+        try:
+            history_path = os.path.join(self.config_dir, "cloud_delete_history.json")
+            with open(history_path, 'w', encoding='utf-8') as f:
+                json.dump(self.cloud_deleted_items, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"保存云端删除历史失败：{e}")
+            return False
+
+    def load_cloud_delete_history(self):
+        """加载云端删除历史"""
+        try:
+            history_path = os.path.join(self.config_dir, "cloud_delete_history.json")
+            if os.path.exists(history_path):
+                with open(history_path, 'r', encoding='utf-8') as f:
+                    self.cloud_deleted_items = json.load(f)
+                self._cleanup_expired_cloud_delete_history()
+                logger.info(f"加载了 {len(self.cloud_deleted_items)} 条云端删除历史")
+        except Exception as e:
+            logger.error(f"加载云端删除历史失败：{e}")
+
+    def cleanup_expired_cloud_delete_history(self):
+        """公开方法：清理过期云端删除记录"""
+        self._cleanup_expired_cloud_delete_history()
+        self.save_cloud_delete_history()
+
+    def _cleanup_expired_cloud_delete_history(self):
+        """清理过期云端删除记录"""
+        now = time.time()
+        cutoff = 1800  # 30 分钟
+        self.cloud_deleted_items = [
+            item for item in self.cloud_deleted_items
+            if now - item.get('deleted_at_ts', 0) < cutoff
+        ]
+        # 保留最新 N 条
+        self.cloud_deleted_items = self.cloud_deleted_items[-self.MAX_CLOUD_DELETE_HISTORY:]
+
+    def undo_cloud_delete(self, github_path: str) -> Tuple[bool, str]:
+        """从云端删除历史中恢复文件。"""
+        if self.github_sync is None:
+            return False, "未配置GitHub连接，无法恢复"
+
+        try:
+            for i, item in enumerate(self.cloud_deleted_items):
+                if item.get('path', '') == github_path:
+                    cloud_record = item
+                    content = cloud_record.get('content', '')
+                    sha = cloud_record.get('sha', '')
+                    is_base64 = cloud_record.get('is_base64', False)
+                    name = cloud_record.get('name', github_path)
+
+                    if not sha:
+                        return False, f"恢复 '{name}' 失败：缺少文件 SHA 信息"
+
+                    # 使用 GitHubSync 实例执行恢复
+                    result = self.github_sync.restore_file(
+                        github_path, content, sha,
+                        message=f"恢复文件: {name}",
+                        is_base64=is_base64
+                    )
+                    if result[0]:
+                        # 从删除历史中移除
+                        self.cloud_deleted_items.pop(i)
+                        self.save_cloud_delete_history()
+                        logger.info(f"云端文件已恢复: {name} ({github_path})")
+                    return result
+
+            logger.warning(f"undo_cloud_delete: 未找到 path={github_path}")
+            return False, f"文件 '{github_path}' 不在云端删除历史中或已过期"
+
+        except Exception as e:
+            logger.error(f"undo_cloud_delete 失败: {e}")
+            return False, f"恢复失败：{e}"
     
     def scan_local_files(self, base_dir: str = None) -> int:
         """扫描本地同步文件夹，返回扫描到的文件数量"""
@@ -1162,6 +1311,7 @@ class UIManager:
     def __init__(self, root: tk.Tk, file_store: FileStore, github_sync: GitHubSync):
         self.root = root
         self.file_store = file_store
+        self.file_store.github_sync = github_sync
         self.github_sync = github_sync
         
         self.selected_file_id = None
@@ -2542,103 +2692,136 @@ class UIManager:
             self.show_error(f"{fail_count} 个项目删除失败")
 
     def _show_delete_history(self):
-        """显示删除历史，支持撤销恢复"""
+        """显示删除历史，支持本地/云端撤销恢复"""
         self.file_store._cleanup_expired_delete_history()
-        if not self.file_store.deleted_items:
+        self.file_store._cleanup_expired_cloud_delete_history()
+
+        local_history = self.file_store.deleted_items
+        cloud_history = self.file_store.cloud_deleted_items
+
+        if not local_history and not cloud_history:
             self.show_info("当前没有可恢复的已删除文件")
             return
 
-        history = self.file_store.deleted_items
-
         dialog = tk.Toplevel(self.root)
         dialog.title("撤销删除")
-        dialog.geometry("700x450")
+        dialog.geometry("750x500")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg='#ffffff')
 
         dialog.update_idletasks()
-        wx = self.root.winfo_x() + (self.root.winfo_width() - 700) // 2
-        wy = self.root.winfo_y() + (self.root.winfo_height() - 450) // 2
+        wx = self.root.winfo_x() + (self.root.winfo_width() - 750) // 2
+        wy = self.root.winfo_y() + (self.root.winfo_height() - 500) // 2
         dialog.geometry(f"+{wx}+{wy}")
 
         tk.Label(dialog, text="🕐 已删除项目（可撤销恢复）",
                  font=('Microsoft YaHei', 12, 'bold'),
                  bg='#ffffff', fg='#1e293b').pack(pady=(12, 0))
 
-        # Treeview 显示删除历史
-        tree_frame = tk.Frame(dialog, bg='#ffffff')
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        # Notebook 切换本地/云端
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=15, pady=(5, 0))
 
-        columns = ('name', 'type', 'size', 'deleted_at')
-        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=10)
-        tree.heading('name', text='名称')
-        tree.heading('type', text='类型')
-        tree.heading('size', text='大小')
-        tree.heading('deleted_at', text='删除时间')
-        tree.column('name', width=300)
-        tree.column('type', width=80, anchor='center')
-        tree.column('size', width=100, anchor='center')
-        tree.column('deleted_at', width=180, anchor='center')
+        # 本地删除 tab
+        local_tab = tk.Frame(notebook, bg='#ffffff')
+        notebook.add(local_tab, text="  本地删除  ")
 
-        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # 云端删除 tab
+        cloud_tab = tk.Frame(notebook, bg='#ffffff')
+        notebook.add(cloud_tab, text="  云端删除  ")
 
-        for item in history:
-            fd = item.get('file_data', {})
-            file_item = FileItem.from_dict(fd)
-            size_str = file_item.format_size()
-            deleted_at = item.get('deleted_at', '-')
-            icon = "📁" if file_item.is_folder else file_item.get_icon()
-            tree.insert('', tk.END, values=(
-                f"{icon} {fd.get('file_name', '?')}",
-                "文件夹" if file_item.is_folder else fd.get('file_type', '-'),
-                size_str,
-                deleted_at
-            ), tags=(fd.get('id', ''),))
+        def _build_history_tree(frame, history, is_cloud):
+            """通用：在 frame 中构建 Treeview"""
+            body = tk.Frame(frame, bg='#ffffff')
+            body.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
 
-        # 按钮区
-        btn_frame = tk.Frame(dialog, bg='#ffffff')
-        btn_frame.pack(pady=(0, 12))
+            columns = ('name', 'type', 'size', 'deleted_at', 'path')
+            tree = ttk.Treeview(body, columns=columns, show='headings', height=12)
+            tree.heading('name', text='名称')
+            tree.heading('type', text='类型')
+            tree.heading('size', text='大小')
+            tree.heading('deleted_at', text='删除时间')
+            tree.heading('path', text='路径')
+            tree.column('name', width=220)
+            tree.column('type', width=70, anchor='center')
+            tree.column('size', width=90, anchor='center')
+            tree.column('deleted_at', width=170, anchor='center')
+            tree.column('path', width=150)
 
-        def on_double_click(event):
-            selection = tree.selection()
-            if not selection:
+            scrollbar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+            items_ref = []  # 保存每个 item 的 {tags, values}
+
+            for item in history:
+                if is_cloud:
+                    cloud_record = item
+                    icon = "☁️ 📄"
+                    name = cloud_record.get('name', os.path.basename(cloud_record.get('path', '?')))
+                    path = cloud_record.get('path', '-')
+                    size = cloud_record.get('size', 0)
+                    size_str = f"{size / 1024:.1f} KB" if size > 1024 else f"{size} B" if size > 0 else "-"
+                    deleted_at = cloud_record.get('deleted_at', '-')
+                    tags = (json.dumps(cloud_record, ensure_ascii=False),)  # 完整记录作为 tag
+                    tree.insert('', tk.END, values=(f"{icon} {name}", '文件', size_str, deleted_at, path),
+                                tags=tags)
+                    items_ref.append({'type': 'cloud', 'record': cloud_record, 'item': tree.get_children()[-1]})
+                else:
+                    fd = item.get('file_data', {})
+                    file_item = FileItem.from_dict(fd)
+                    size_str = file_item.format_size()
+                    deleted_at = item.get('deleted_at', '-')
+                    path = file_item.github_path if hasattr(file_item, 'github_path') else '-'
+                    icon = "📁" if file_item.is_folder else file_item.get_icon()
+                    tree.insert('', tk.END, values=(
+                        f"{icon} {fd.get('file_name', '?')}",
+                        "文件夹" if file_item.is_folder else fd.get('file_type', '-'),
+                        size_str, deleted_at, path
+                    ), tags=(fd.get('id', ''),))
+                    items_ref.append({'type': 'local', 'id': fd.get('id', ''), 'item': tree.get_children()[-1]})
+
+            return tree, items_ref
+
+        # 构建本地删除列表
+        local_tree, local_items = _build_history_tree(local_tab, local_history, is_cloud=False)
+
+        # 构建云端删除列表
+        cloud_tree, cloud_items = _build_history_tree(cloud_tab, cloud_history, is_cloud=True)
+
+        # 本地恢复
+        def _local_undo_one(item_idx):
+            if item_idx >= len(local_items):
                 return
-            sel_item = tree.item(selection[0])
-            file_id = sel_item['tags'][0] if sel_item['tags'] else None
-            if file_id:
-                _undo_one(file_id)
+            info = local_items[item_idx]
+            if info['type'] == 'local':
+                success, msg = self.file_store.undo_delete(info['id'])
+                if success:
+                    self.file_store.load_files()
+                    self.refresh_list()
+                    self.show_success(msg)
+                    dialog.destroy()
+                else:
+                    self.show_error(msg)
 
-        tree.bind('<Double-1>', on_double_click)
-
-        def _undo_one(file_id):
-            success, msg = self.file_store.undo_delete(file_id)
-            if success:
-                # 恢复后重新加载文件索引以确保列表正确显示
-                self.file_store.load_files()
-                self.refresh_list()
-                self.show_success(msg)
-                dialog.destroy()
-            else:
-                self.show_error(msg)
-
-        def _undo_all():
+        def _local_undo_all():
+            count = len(local_items)
+            if count == 0:
+                return
             if not messagebox.askyesno("确认恢复",
-                                       f"确定要恢复所有 {len(history)} 个已删除的项目吗？\n\n此操作不可撤销！"):
+                                       f"确定要恢复所有 {count} 个已删除的项目吗？\n\n此操作不可撤销！"):
                 return
             restored = 0
             failed = 0
-            for item in list(history):
-                fd = item.get('file_data', {})
-                file_id = fd.get('id', '')
-                s, _ = self.file_store.undo_delete(file_id)
-                if s:
-                    restored += 1
-                else:
-                    failed += 1
+            for info in list(local_items):
+                if info['type'] == 'local':
+                    s, _ = self.file_store.undo_delete(info['id'])
+                    if s:
+                        restored += 1
+                    else:
+                        failed += 1
             self.file_store.load_files()
             self.refresh_list()
             if restored > 0:
@@ -2647,25 +2830,99 @@ class UIManager:
                 self.show_error(f"恢复完成：成功 {restored}，失败 {failed}")
             dialog.destroy()
 
-        def _clear_expired():
+        def _local_clear_expired():
             self.file_store.cleanup_expired_delete_history()
             self.show_info("过期的删除记录已清理")
             dialog.destroy()
             self.refresh_list()
 
-        tk.Button(btn_frame, text="全部恢复", font=('Microsoft YaHei', 10),
+        # 云端恢复
+        def _cloud_undo_one(item_idx):
+            if item_idx >= len(cloud_items):
+                return
+            info = cloud_items[item_idx]
+            record = info.get('record', {})
+            path = record.get('path', '')
+            name = record.get('name', os.path.basename(path))
+            success, msg = self.file_store.undo_cloud_delete(path)
+            if success:
+                self.refresh_list()
+                self.show_success(msg)
+                dialog.destroy()
+            else:
+                self.show_error(msg)
+
+        def _cloud_undo_all():
+            count = len(cloud_items)
+            if count == 0:
+                return
+            if not messagebox.askyesno("确认恢复",
+                                       f"确定要恢复所有 {count} 个云端已删除的项目吗？\n\n此操作将重新上传文件到 GitHub！"):
+                return
+            restored = 0
+            failed = 0
+            for info in list(cloud_items):
+                record = info.get('record', {})
+                path = record.get('path', '')
+                s, _ = self.file_store.undo_cloud_delete(path)
+                if s:
+                    restored += 1
+                else:
+                    failed += 1
+            self.refresh_list()
+            if restored > 0:
+                self.show_success(f"已恢复 {restored} 个云端项目")
+            if failed > 0:
+                self.show_error(f"恢复完成：成功 {restored}，失败 {failed}")
+            dialog.destroy()
+
+        def _cloud_clear_expired():
+            self.file_store.cleanup_expired_cloud_delete_history()
+            self.show_info("过期的云端删除记录已清理")
+            dialog.destroy()
+            self.refresh_list()
+
+        # 本地按钮区
+        local_btn_frame = tk.Frame(local_tab, bg='#ffffff')
+        local_btn_frame.pack(pady=(0, 8), side=tk.BOTTOM)
+        tk.Button(local_btn_frame, text="全部恢复", font=('Microsoft YaHei', 10),
                   bg='#22c55e', fg='white', relief=tk.FLAT, padx=15, pady=5,
-                  cursor='hand2', command=_undo_all).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="清理过期", font=('Microsoft YaHei', 10),
+                  cursor='hand2', command=_local_undo_all).pack(side=tk.LEFT, padx=5)
+        tk.Button(local_btn_frame, text="清理过期", font=('Microsoft YaHei', 10),
                   bg='#f59e0b', fg='white', relief=tk.FLAT, padx=15, pady=5,
-                  cursor='hand2', command=_clear_expired).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="关闭", font=('Microsoft YaHei', 10),
-                  bg='#94a3b8', fg='white', relief=tk.FLAT, padx=15, pady=5,
-                  cursor='hand2', command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+                  cursor='hand2', command=_local_clear_expired).pack(side=tk.LEFT, padx=5)
+
+        # 云端按钮区
+        cloud_btn_frame = tk.Frame(cloud_tab, bg='#ffffff')
+        cloud_btn_frame.pack(pady=(0, 8), side=tk.BOTTOM)
+        tk.Button(cloud_btn_frame, text="全部恢复", font=('Microsoft YaHei', 10),
+                  bg='#22c55e', fg='white', relief=tk.FLAT, padx=15, pady=5,
+                  cursor='hand2', command=_cloud_undo_all).pack(side=tk.LEFT, padx=5)
+        tk.Button(cloud_btn_frame, text="清理过期", font=('Microsoft YaHei', 10),
+                  bg='#f59e0b', fg='white', relief=tk.FLAT, padx=15, pady=5,
+                  cursor='hand2', command=_cloud_clear_expired).pack(side=tk.LEFT, padx=5)
+
+        # 双击事件
+        def _on_local_double_click(event, tree, items):
+            selection = tree.selection()
+            if not selection:
+                return
+            idx = tree.index(selection[0])
+            _local_undo_one(idx)
+
+        def _on_cloud_double_click(event, tree, items):
+            selection = tree.selection()
+            if not selection:
+                return
+            idx = tree.index(selection[0])
+            _cloud_undo_one(idx)
+
+        local_tree.bind('<Double-1>', lambda e: _on_local_double_click(e, local_tree, local_items))
+        cloud_tree.bind('<Double-1>', lambda e: _on_cloud_double_click(e, cloud_tree, cloud_items))
 
         # 提示
-        tk.Label(dialog, text="双击项目可单独恢复，或点击'全部恢复'恢复所有",
-                 font=('Microsoft YaHei', 9), bg='#ffffff', fg='#94a3b8').pack(pady=(0, 5))
+        tk.Label(dialog, text="双击项目可单独恢复 | 本地删除 30 分钟内可恢复 | 云端删除可恢复文件内容",
+                 font=('Microsoft YaHei', 9), bg='#ffffff', fg='#94a3b8').pack(pady=(5, 8))
     
     def _show_github_config(self):
         """显示GitHub配置对话框"""
@@ -3035,7 +3292,7 @@ class UIManager:
             warning = "\n\n注意：删除文件夹会删除其中所有内容！"
 
         if not messagebox.askyesno("确认删除",
-                                   f"确定要从 GitHub 删除 {' 和 '.join(parts)} 吗？{warning}\n\n此操作不可恢复！"):
+                                   f"确定要从 GitHub 删除 {' 和 '.join(parts)} 吗？{warning}\n\n删除后可在30分钟内撤销恢复！"):
             return
 
         success_count = 0
@@ -3043,7 +3300,12 @@ class UIManager:
         errors = []
 
         for path in files_to_delete:
-            success, msg = self.github_sync.delete_file(path)
+            def make_record_fn(p):
+                def record_fn(record_info):
+                    self.file_store.cloud_deleted_items.append(record_info)
+                    self.file_store.save_cloud_delete_history()
+                return record_fn
+            success, msg = self.github_sync.delete_file(path, save_record=make_record_fn(path))
             if success:
                 success_count += 1
             else:
@@ -3179,6 +3441,7 @@ class FileManagerApp:
         self.file_store.load_config()
         self.file_store.load_files()
         self.file_store.load_delete_history()
+        self.file_store.load_cloud_delete_history()
         
         if self.file_store.github_config.get('token'):
             self.github_sync.connect(
