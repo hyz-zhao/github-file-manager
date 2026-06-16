@@ -963,32 +963,41 @@ class FileStore:
                 if item.get('file_data', {}).get('id') == file_id:
                     file_data = item['file_data']
                     local_path = file_data.get('local_path', '')
+                    file_name = file_data.get('file_name', '')
 
                     if os.path.exists(local_path):
+                        logger.warning(f"恢复文件 {file_name}: 本地文件仍存在，跳过恢复")
                         self.deleted_items.pop(i)
-                        return False, f"文件 '{file_data.get('file_name')}' 的本地文件仍存在，无法恢复"
+                        self.save_delete_history()
+                        # 仍然加回索引
+                        self.files[file_id] = FileItem.from_dict(file_data)
+                        self.save_files()
+                        return True, f"'{file_name}' 已从恢复列表移除（文件仍存在）"
 
                     # 恢复文件对象
                     restored = FileItem.from_dict(file_data)
                     self.files[file_id] = restored
 
                     # 恢复物理文件（文件夹需要递归创建）
-                    if os.path.exists(os.path.dirname(local_path)):
-                        if restored.is_folder:
-                            os.makedirs(local_path, exist_ok=True)
-                    else:
-                        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                    parent_dir = os.path.dirname(local_path)
+                    if not os.path.exists(parent_dir):
+                        os.makedirs(parent_dir, exist_ok=True)
+                    if restored.is_folder and not os.path.exists(local_path):
+                        os.makedirs(local_path, exist_ok=True)
 
                     # 清理这条记录
                     self.deleted_items.pop(i)
                     self.save_files()
                     self.save_delete_history()
+                    logger.info(f"恢复文件 {file_name} ({file_id})，路径: {local_path}")
 
                     return True, f"已恢复 '{restored.file_name}'"
 
+            logger.warning(f"undo_delete: 未找到 file_id={file_id}")
             return False, "文件不在删除历史中"
 
         except Exception as e:
+            logger.error(f"undo_delete 失败: {e}")
             return False, f"恢复失败：{e}"
     
     def rename_file(self, file_id: str, new_name: str) -> Tuple[bool, str]:
@@ -1083,18 +1092,27 @@ class FileStore:
             items = os.listdir(target_dir)
             for item_name in items:
                 item_path = os.path.join(target_dir, item_name)
-                
+
                 if os.path.isfile(item_path):
                     file_item = self._add_file_to_index(item_path)
                     results.append(file_item)
                 elif os.path.isdir(item_path):
                     folder_item = self._add_folder_to_index(item_path)
                     results.append(folder_item)
-            
+
             self.save_files()
         except Exception as e:
             logger.error(f"获取文件夹内容失败：{e}")
-        
+
+        # 补充索引中存在但磁盘上不存在的项（如恢复后文件尚未重建的场景）
+        for file_item in self.files.values():
+            rel = os.path.relpath(file_item.local_path, self.sync_dir).replace("\\", "/")
+            if folder_path:
+                if not rel.startswith(folder_path + "/") and rel != folder_path:
+                    continue
+            if file_item not in results:
+                results.append(file_item)
+
         return results
     
     def search(self, keyword: str, category: str = "全部", folder_path: str = None) -> List[FileItem]:
@@ -2599,6 +2617,8 @@ class UIManager:
         def _undo_one(file_id):
             success, msg = self.file_store.undo_delete(file_id)
             if success:
+                # 恢复后重新加载文件索引以确保列表正确显示
+                self.file_store.load_files()
                 self.refresh_list()
                 self.show_success(msg)
                 dialog.destroy()
@@ -2619,6 +2639,7 @@ class UIManager:
                     restored += 1
                 else:
                     failed += 1
+            self.file_store.load_files()
             self.refresh_list()
             if restored > 0:
                 self.show_success(f"已恢复 {restored} 个项目")
