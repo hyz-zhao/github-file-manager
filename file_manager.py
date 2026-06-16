@@ -494,6 +494,8 @@ class FileStore:
         self.sync_dir = os.path.join(config_dir, "sync_files")
         
         self.files: Dict[str, FileItem] = {}
+        self.deleted_items: List[dict] = []  # 删除历史：[{file_data, deleted_at}]
+        self.MAX_DELETE_HISTORY = 20  # 最多保留20条删除记录
         self.github_config = {
             'token': '',
             'repo_name': '',
@@ -624,6 +626,46 @@ class FileStore:
         except Exception as e:
             logger.error(f"保存文件索引失败：{e}")
             return False
+
+    def save_delete_history(self) -> bool:
+        """保存删除历史"""
+        try:
+            history_path = os.path.join(self.config_dir, "delete_history.json")
+            with open(history_path, 'w', encoding='utf-8') as f:
+                json.dump(self.deleted_items, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"保存删除历史失败：{e}")
+            return False
+
+    def load_delete_history(self):
+        """加载删除历史"""
+        try:
+            history_path = os.path.join(self.config_dir, "delete_history.json")
+            if os.path.exists(history_path):
+                with open(history_path, 'r', encoding='utf-8') as f:
+                    self.deleted_items = json.load(f)
+                # 清理过期的记录（默认30分钟过期）
+                self._cleanup_expired_delete_history()
+                logger.info(f"加载了 {len(self.deleted_items)} 条删除历史")
+        except Exception as e:
+            logger.error(f"加载删除历史失败：{e}")
+
+    def cleanup_expired_delete_history(self):
+        """公开方法：清理过期删除记录"""
+        self._cleanup_expired_delete_history()
+        self.save_delete_history()
+
+    def _cleanup_expired_delete_history(self):
+        """清理过期删除记录"""
+        now = time.time()
+        cutoff = 1800  # 30 分钟
+        self.deleted_items = [
+            item for item in self.deleted_items
+            if now - item.get('deleted_at_ts', 0) < cutoff
+        ]
+        # 保留最新 N 条
+        self.deleted_items = self.deleted_items[-self.MAX_DELETE_HISTORY:]
     
     def scan_local_files(self, base_dir: str = None) -> int:
         """扫描本地同步文件夹，返回扫描到的文件数量"""
@@ -876,14 +918,15 @@ class FileStore:
         删除本地文件或文件夹
         参数：file_id - 文件ID
         返回：(是否成功, 消息)
+        注意：被删除的文件会保存在删除历史中，可在30分钟内撤销恢复。
         """
         try:
             if file_id not in self.files:
                 return False, "文件不存在"
-            
+
             file_item = self.files[file_id]
             local_path = file_item.local_path
-            
+
             if os.path.exists(local_path):
                 if file_item.is_folder:
                     shutil.rmtree(local_path)
@@ -892,14 +935,61 @@ class FileStore:
                             del self.files[fid]
                 else:
                     os.remove(local_path)
-            
+
+            # 保存删除快照（移除引用后再保存，避免引用被清理）
+            deleted_snapshot = {
+                'file_data': file_item.to_dict(),
+                'deleted_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'deleted_at_ts': time.time()
+            }
+
             del self.files[file_id]
             self.save_files()
-            
-            return True, f"'{file_item.file_name}' 已删除"
-            
+
+            # 添加到删除历史
+            self.deleted_items.append(deleted_snapshot)
+            self._cleanup_expired_delete_history()
+            self.save_delete_history()
+
+            return True, f"'{file_item.file_name}' 已删除（可撤销）"
+
         except Exception as e:
             return False, f"删除失败：{e}"
+
+    def undo_delete(self, file_id: str) -> Tuple[bool, str]:
+        """从删除历史中恢复文件。"""
+        try:
+            for i, item in enumerate(self.deleted_items):
+                if item.get('file_data', {}).get('id') == file_id:
+                    file_data = item['file_data']
+                    local_path = file_data.get('local_path', '')
+
+                    if os.path.exists(local_path):
+                        self.deleted_items.pop(i)
+                        return False, f"文件 '{file_data.get('file_name')}' 的本地文件仍存在，无法恢复"
+
+                    # 恢复文件对象
+                    restored = FileItem.from_dict(file_data)
+                    self.files[file_id] = restored
+
+                    # 恢复物理文件（文件夹需要递归创建）
+                    if os.path.exists(os.path.dirname(local_path)):
+                        if restored.is_folder:
+                            os.makedirs(local_path, exist_ok=True)
+                    else:
+                        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+                    # 清理这条记录
+                    self.deleted_items.pop(i)
+                    self.save_files()
+                    self.save_delete_history()
+
+                    return True, f"已恢复 '{restored.file_name}'"
+
+            return False, "文件不在删除历史中"
+
+        except Exception as e:
+            return False, f"恢复失败：{e}"
     
     def rename_file(self, file_id: str, new_name: str) -> Tuple[bool, str]:
         """
@@ -1258,6 +1348,7 @@ class UIManager:
             ("⬇️ 下载", self._on_download, "#06b6d4"),
             ("✏️ 重命名", self._on_rename, "#f59e0b"),
             ("🗑️ 删除", self._on_delete, "#ef4444"),
+            ("↩️ 撤销删除", self._show_delete_history, "#06b6d4"),
             ("🔄 刷新", self.refresh_list, "#64748b"),
         ]
 
@@ -2054,6 +2145,10 @@ class UIManager:
                         context_menu.add_command(label="✏️ 重命名", command=self._on_rename)
                         context_menu.add_command(label="🗑️ 删除", command=self._on_delete)
 
+                if self.file_store.deleted_items:
+                    context_menu.add_separator()
+                    context_menu.add_command(label="↩️ 撤销删除", command=self._show_delete_history)
+
                 context_menu.add_separator()
                 context_menu.add_command(label="📤 上传文件", command=self._on_upload_file)
                 context_menu.add_command(label="📁 上传文件夹", command=self._on_upload_folder)
@@ -2401,7 +2496,7 @@ class UIManager:
             if file_item.is_folder:
                 warning = "\n\n注意：文件夹内所有内容都将被删除！"
             if not messagebox.askyesno("确认删除",
-                                       f"确定要删除{item_type} '{file_item.file_name}' 吗？{warning}\n\n此操作不可恢复！"):
+                                       f"确定要删除{item_type} '{file_item.file_name}' 吗？{warning}\n\n删除后可在30分钟内撤销恢复。"):
                 return
         else:
             folder_count = sum(1 for f in selected_files if f.is_folder)
@@ -2410,7 +2505,7 @@ class UIManager:
             if folder_count > 0:
                 warning = f"\n\n注意：包含 {folder_count} 个文件夹，所有内容都将被删除！"
             if not messagebox.askyesno("确认删除",
-                                       f"确定要删除选中的 {file_count} 个文件和 {folder_count} 个文件夹吗？{warning}\n\n此操作不可恢复！"):
+                                       f"确定要删除选中的 {file_count} 个文件和 {folder_count} 个文件夹吗？{warning}\n\n删除后可在30分钟内撤销恢复。"):
                 return
 
         success_count = 0
@@ -2427,6 +2522,129 @@ class UIManager:
             self.show_success(f"成功删除 {success_count} 个项目")
         if fail_count > 0:
             self.show_error(f"{fail_count} 个项目删除失败")
+
+    def _show_delete_history(self):
+        """显示删除历史，支持撤销恢复"""
+        self.file_store._cleanup_expired_delete_history()
+        if not self.file_store.deleted_items:
+            self.show_info("当前没有可恢复的已删除文件")
+            return
+
+        history = self.file_store.deleted_items
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("撤销删除")
+        dialog.geometry("700x450")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg='#ffffff')
+
+        dialog.update_idletasks()
+        wx = self.root.winfo_x() + (self.root.winfo_width() - 700) // 2
+        wy = self.root.winfo_y() + (self.root.winfo_height() - 450) // 2
+        dialog.geometry(f"+{wx}+{wy}")
+
+        tk.Label(dialog, text="🕐 已删除项目（可撤销恢复）",
+                 font=('Microsoft YaHei', 12, 'bold'),
+                 bg='#ffffff', fg='#1e293b').pack(pady=(12, 0))
+
+        # Treeview 显示删除历史
+        tree_frame = tk.Frame(dialog, bg='#ffffff')
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+
+        columns = ('name', 'type', 'size', 'deleted_at')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=10)
+        tree.heading('name', text='名称')
+        tree.heading('type', text='类型')
+        tree.heading('size', text='大小')
+        tree.heading('deleted_at', text='删除时间')
+        tree.column('name', width=300)
+        tree.column('type', width=80, anchor='center')
+        tree.column('size', width=100, anchor='center')
+        tree.column('deleted_at', width=180, anchor='center')
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        for item in history:
+            fd = item.get('file_data', {})
+            file_item = FileItem.from_dict(fd)
+            size_str = file_item.format_size()
+            deleted_at = item.get('deleted_at', '-')
+            icon = "📁" if file_item.is_folder else file_item.get_icon()
+            tree.insert('', tk.END, values=(
+                f"{icon} {fd.get('file_name', '?')}",
+                "文件夹" if file_item.is_folder else fd.get('file_type', '-'),
+                size_str,
+                deleted_at
+            ), tags=(fd.get('id', ''),))
+
+        # 按钮区
+        btn_frame = tk.Frame(dialog, bg='#ffffff')
+        btn_frame.pack(pady=(0, 12))
+
+        def on_double_click(event):
+            selection = tree.selection()
+            if not selection:
+                return
+            sel_item = tree.item(selection[0])
+            file_id = sel_item['tags'][0] if sel_item['tags'] else None
+            if file_id:
+                _undo_one(file_id)
+
+        tree.bind('<Double-1>', on_double_click)
+
+        def _undo_one(file_id):
+            success, msg = self.file_store.undo_delete(file_id)
+            if success:
+                self.refresh_list()
+                self.show_success(msg)
+                dialog.destroy()
+            else:
+                self.show_error(msg)
+
+        def _undo_all():
+            if not messagebox.askyesno("确认恢复",
+                                       f"确定要恢复所有 {len(history)} 个已删除的项目吗？\n\n此操作不可撤销！"):
+                return
+            restored = 0
+            failed = 0
+            for item in list(history):
+                fd = item.get('file_data', {})
+                file_id = fd.get('id', '')
+                s, _ = self.file_store.undo_delete(file_id)
+                if s:
+                    restored += 1
+                else:
+                    failed += 1
+            self.refresh_list()
+            if restored > 0:
+                self.show_success(f"已恢复 {restored} 个项目")
+            if failed > 0:
+                self.show_error(f"恢复完成：成功 {restored}，失败 {failed}")
+            dialog.destroy()
+
+        def _clear_expired():
+            self.file_store.cleanup_expired_delete_history()
+            self.show_info("过期的删除记录已清理")
+            dialog.destroy()
+            self.refresh_list()
+
+        tk.Button(btn_frame, text="全部恢复", font=('Microsoft YaHei', 10),
+                  bg='#22c55e', fg='white', relief=tk.FLAT, padx=15, pady=5,
+                  cursor='hand2', command=_undo_all).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="清理过期", font=('Microsoft YaHei', 10),
+                  bg='#f59e0b', fg='white', relief=tk.FLAT, padx=15, pady=5,
+                  cursor='hand2', command=_clear_expired).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="关闭", font=('Microsoft YaHei', 10),
+                  bg='#94a3b8', fg='white', relief=tk.FLAT, padx=15, pady=5,
+                  cursor='hand2', command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        # 提示
+        tk.Label(dialog, text="双击项目可单独恢复，或点击'全部恢复'恢复所有",
+                 font=('Microsoft YaHei', 9), bg='#ffffff', fg='#94a3b8').pack(pady=(0, 5))
     
     def _show_github_config(self):
         """显示GitHub配置对话框"""
@@ -2939,6 +3157,7 @@ class FileManagerApp:
         """初始化应用"""
         self.file_store.load_config()
         self.file_store.load_files()
+        self.file_store.load_delete_history()
         
         if self.file_store.github_config.get('token'):
             self.github_sync.connect(
